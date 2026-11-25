@@ -9,7 +9,7 @@ import AdminFramesPanel from './components/AdminFramesPanel';
 import HomeVisitScheduler from './components/HomeVisitScheduler';
 import QuickCustomerLoginModal from './components/QuickCustomerLoginModal';
 import PaulistaLocationMap from './components/PaulistaLocationMap';
-import { CustomerSession, EyewearFrame, MedicalPrescription } from './types';
+import { CustomerSession, EyewearFrame, MedicalPrescription, OpticalQuote } from './types';
 import {
   clearCustomerSession,
   getStoredCustomerSession,
@@ -62,6 +62,7 @@ export default function App() {
   const [linkedPrescription, setLinkedPrescription] = useState<MedicalPrescription | undefined>(
     undefined
   );
+  const [loadedAdminQuote, setLoadedAdminQuote] = useState<OpticalQuote | undefined>(undefined);
 
   // Sync URL path when navigating (supports /admin directly)
   const navigateToSection = (section: string) => {
@@ -90,10 +91,18 @@ export default function App() {
     lensType: string,
     lensPrice: number
   ) => {
+    setLoadedAdminQuote(undefined);
     setLastSelectedFrame(frame);
     setSelectedColor(color);
     setSelectedLensType(lensType);
     setSelectedLensPrice(lensPrice);
+    navigateToSection('quotes');
+  };
+
+  // When Admin opens a customer quote directly in the Quotes/Billing manager
+  const handleOpenAdminQuoteInManager = (quote: OpticalQuote) => {
+    setLastSelectedFrame(undefined);
+    setLoadedAdminQuote(quote);
     navigateToSection('quotes');
   };
 
@@ -172,6 +181,7 @@ export default function App() {
             selectedLensPrice={selectedLensPrice}
             linkedPrescription={linkedPrescription}
             customerSession={customerSession}
+            initialQuote={loadedAdminQuote}
           />
         )}
 
@@ -183,7 +193,10 @@ export default function App() {
         )}
 
         {activeSection === 'admin' && (
-          <AdminFramesPanel onNavigateToCatalog={() => navigateToSection('catalog')} />
+          <AdminFramesPanel
+            onNavigateToCatalog={() => navigateToSection('catalog')}
+            onOpenQuoteInManager={handleOpenAdminQuoteInManager}
+          />
         )}
       </main>
 

@@ -83,11 +83,14 @@ export interface SelectedItem {
   prescription?: MedicalPrescription;
 }
 
+export type QuoteStatus = 'rascunho' | 'enviado' | 'aprovado' | 'cancelado';
+
 export interface OpticalQuote {
   id: string;
   quoteNumber: string;
   date: string;
   validUntil: string;
+  customerId?: string;
   customerName: string;
   customerPhone: string;
   customerEmail: string;
@@ -99,6 +102,9 @@ export interface OpticalQuote {
   paymentMethod: string;
   observations: string;
   sellerName: string;
+  status?: QuoteStatus;
+  createdBy?: 'admin' | 'cliente';
+  createdAt?: string;
 }
 
 export interface OpticalReceipt {

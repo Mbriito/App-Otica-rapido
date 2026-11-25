@@ -4,6 +4,8 @@ import {
   EyewearFrame,
   HomeVisitAppointment,
   MedicalPrescription,
+  OpticalQuote,
+  QuoteStatus,
 } from '../types';
 
 const STORAGE_KEYS = {
@@ -13,9 +15,11 @@ const STORAGE_KEYS = {
   PRESCRIPTIONS: 'otica_rapido_prescriptions_v1',
   APPOINTMENTS: 'otica_rapido_appointments_v1',
   LGPD_REQUESTS: 'otica_rapido_lgpd_requests_v1',
+  QUOTES: 'otica_rapido_quotes_v1',
 } as const;
 
 const FRAMES_UPDATED_EVENT = 'otica-frames-updated';
+const QUOTES_UPDATED_EVENT = 'otica-quotes-updated';
 
 function readJsonStorage<T>(key: string, fallback: T): T {
   try {
@@ -695,3 +699,270 @@ export async function saveLgpdRequestRecord(params: {
     ...existing,
   ]);
 }
+
+// ============================================================================
+// 6. ORÇAMENTOS DE CLIENTES (PAINEL /admin + SUPABASE REALTIME)
+// ============================================================================
+
+interface SupabaseQuoteRow {
+  id: string;
+  quote_number: string;
+  customer_id: string | null;
+  customer_name: string;
+  customer_phone: string;
+  customer_email: string | null;
+  customer_cpf: string | null;
+  items: OpticalQuote['items'];
+  subtotal: number;
+  discount: number;
+  total: number;
+  payment_method: string;
+  observations: string | null;
+  seller_name: string;
+  quote_date: string;
+  valid_until: string;
+  status: QuoteStatus;
+  created_by: 'admin' | 'cliente';
+  created_at: string;
+}
+
+function mapRowToQuote(row: SupabaseQuoteRow): OpticalQuote {
+  return {
+    id: row.id,
+    quoteNumber: row.quote_number,
+    customerId: row.customer_id || undefined,
+    customerName: row.customer_name,
+    customerPhone: row.customer_phone,
+    customerEmail: row.customer_email || '',
+    customerCpf: row.customer_cpf || '',
+    items: Array.isArray(row.items) ? row.items : [],
+    subtotal: Number(row.subtotal) || 0,
+    discount: Number(row.discount) || 0,
+    total: Number(row.total) || 0,
+    paymentMethod: row.payment_method || 'Pix à vista',
+    observations: row.observations || '',
+    sellerName: row.seller_name || 'Administrador - Ótica Rapido',
+    date: row.quote_date || new Date().toISOString().split('T')[0],
+    validUntil: row.valid_until || new Date(Date.now() + 15 * 86400000).toISOString().split('T')[0],
+    status: row.status || 'rascunho',
+    createdBy: row.created_by || 'admin',
+    createdAt: row.created_at,
+  };
+}
+
+export async function fetchRegisteredCustomers(): Promise<CustomerSession[]> {
+  const localCustomers = readJsonStorage<CustomerSession[]>(STORAGE_KEYS.CUSTOMERS_DB, []);
+  const activeSession = getStoredCustomerSession();
+  const mergedLocal = activeSession && !localCustomers.some((c) => c.identifier === activeSession.identifier)
+    ? [activeSession, ...localCustomers]
+    : localCustomers;
+
+  if (!supabase) {
+    return mergedLocal;
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('customers')
+      .select('*')
+      .order('last_login_at', { ascending: false })
+      .limit(50);
+
+    if (error || !data) {
+      return mergedLocal;
+    }
+
+    const mapped: CustomerSession[] = data.map((row: any) => ({
+      id: row.id,
+      identifier: row.identifier,
+      identifierType: row.identifier_type,
+      fullName: row.full_name || '',
+      email: row.email || undefined,
+      phone: row.phone || undefined,
+      lgpdConsent: Boolean(row.lgpd_consent),
+      lgpdConsentAt: row.lgpd_consent_at || row.created_at,
+      lastLoginAt: row.last_login_at || row.created_at,
+    }));
+
+    writeJsonStorage(STORAGE_KEYS.CUSTOMERS_DB, mapped);
+    return mapped;
+  } catch {
+    return mergedLocal;
+  }
+}
+
+export async function fetchQuotes(): Promise<OpticalQuote[]> {
+  const localQuotes = readJsonStorage<OpticalQuote[]>(STORAGE_KEYS.QUOTES, []);
+
+  if (!supabase) {
+    return localQuotes;
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('quotes')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error || !data) {
+      return localQuotes;
+    }
+
+    const mapped = (data as SupabaseQuoteRow[]).map(mapRowToQuote);
+    writeJsonStorage(STORAGE_KEYS.QUOTES, mapped);
+    return mapped;
+  } catch {
+    return localQuotes;
+  }
+}
+
+export async function saveQuoteRecord(
+  payload: Omit<OpticalQuote, 'id' | 'createdAt'> & { id?: string }
+): Promise<OpticalQuote> {
+  const nowIso = new Date().toISOString();
+  const quoteNumber =
+    payload.quoteNumber?.trim() ||
+    `OR-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
+
+  const existingLocal = readJsonStorage<OpticalQuote[]>(STORAGE_KEYS.QUOTES, []);
+  const isUpdate = Boolean(payload.id && existingLocal.some((q) => q.id === payload.id));
+
+  const localQuote: OpticalQuote = {
+    ...payload,
+    id: payload.id || generateUuid(),
+    quoteNumber,
+    customerName: payload.customerName.trim(),
+    customerPhone: payload.customerPhone.trim(),
+    customerEmail: payload.customerEmail?.trim() || '',
+    customerCpf: payload.customerCpf?.trim() || '',
+    subtotal: Number(payload.subtotal) || 0,
+    discount: Number(payload.discount) || 0,
+    total: Number(payload.total) || 0,
+    status: payload.status || 'rascunho',
+    createdBy: payload.createdBy || 'admin',
+    createdAt: nowIso,
+  };
+
+  let savedQuote = localQuote;
+
+  if (supabase) {
+    try {
+      const dbRow = {
+        quote_number: localQuote.quoteNumber,
+        customer_id: localQuote.customerId || null,
+        customer_name: localQuote.customerName,
+        customer_phone: localQuote.customerPhone,
+        customer_email: localQuote.customerEmail,
+        customer_cpf: localQuote.customerCpf,
+        items: localQuote.items,
+        subtotal: localQuote.subtotal,
+        discount: localQuote.discount,
+        total: localQuote.total,
+        payment_method: localQuote.paymentMethod,
+        observations: localQuote.observations,
+        seller_name: localQuote.sellerName,
+        quote_date: localQuote.date,
+        valid_until: localQuote.validUntil,
+        status: localQuote.status || 'rascunho',
+        created_by: localQuote.createdBy || 'admin',
+      };
+
+      const response = isUpdate
+        ? await supabase
+            .from('quotes')
+            .update(dbRow)
+            .eq('id', localQuote.id)
+            .select()
+            .single()
+        : await supabase
+            .from('quotes')
+            .upsert(dbRow, { onConflict: 'quote_number' })
+            .select()
+            .single();
+
+      if (!response.error && response.data) {
+        savedQuote = mapRowToQuote(response.data as SupabaseQuoteRow);
+      }
+    } catch {
+      // Mantém persistência local
+    }
+  }
+
+  const updatedList = [
+    savedQuote,
+    ...existingLocal.filter((q) => q.id !== savedQuote.id && q.quoteNumber !== savedQuote.quoteNumber),
+  ];
+  writeJsonStorage(STORAGE_KEYS.QUOTES, updatedList);
+  window.dispatchEvent(new CustomEvent(QUOTES_UPDATED_EVENT));
+
+  return savedQuote;
+}
+
+export async function updateQuoteStatus(quoteId: string, status: QuoteStatus): Promise<void> {
+  if (supabase) {
+    try {
+      await supabase.from('quotes').update({ status }).eq('id', quoteId);
+    } catch {
+      // Fallback local
+    }
+  }
+
+  const existing = readJsonStorage<OpticalQuote[]>(STORAGE_KEYS.QUOTES, []);
+  const updated = existing.map((q) => (q.id === quoteId ? { ...q, status } : q));
+  writeJsonStorage(STORAGE_KEYS.QUOTES, updated);
+  window.dispatchEvent(new CustomEvent(QUOTES_UPDATED_EVENT));
+}
+
+export async function deleteQuoteRecord(quoteId: string): Promise<void> {
+  if (supabase) {
+    try {
+      await supabase.from('quotes').delete().eq('id', quoteId);
+    } catch {
+      // Fallback local
+    }
+  }
+
+  const existing = readJsonStorage<OpticalQuote[]>(STORAGE_KEYS.QUOTES, []);
+  const updated = existing.filter((q) => q.id !== quoteId);
+  writeJsonStorage(STORAGE_KEYS.QUOTES, updated);
+  window.dispatchEvent(new CustomEvent(QUOTES_UPDATED_EVENT));
+}
+
+export function subscribeToQuotes(onUpdate: (quotes: OpticalQuote[]) => void): () => void {
+  const handleChange = async () => {
+    const quotes = await fetchQuotes();
+    onUpdate(quotes);
+  };
+
+  window.addEventListener(QUOTES_UPDATED_EVENT, handleChange);
+
+  const handleStorageEvent = (e: StorageEvent) => {
+    if (e.key === STORAGE_KEYS.QUOTES) {
+      handleChange();
+    }
+  };
+  window.addEventListener('storage', handleStorageEvent);
+
+  let channel: ReturnType<NonNullable<typeof supabase>['channel']> | null = null;
+  if (supabase) {
+    channel = supabase
+      .channel('public:quotes-realtime')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'quotes' },
+        () => {
+          handleChange();
+        }
+      )
+      .subscribe();
+  }
+
+  return () => {
+    window.removeEventListener(QUOTES_UPDATED_EVENT, handleChange);
+    window.removeEventListener('storage', handleStorageEvent);
+    if (supabase && channel) {
+      supabase.removeChannel(channel);
+    }
+  };
+}
+

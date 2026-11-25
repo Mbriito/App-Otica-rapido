@@ -10,20 +10,23 @@ import {
   RefreshCw,
   ArrowLeft,
   Tag,
-  Sparkles,
   UserCheck,
+  FileText,
 } from 'lucide-react';
-import { EyewearFrame } from '../types';
+import { EyewearFrame, OpticalQuote } from '../types';
 import {
   createCustomFrame,
   deleteCustomFrame,
   fetchCustomFrames,
+  fetchQuotes,
   subscribeToCustomFrames,
   uploadFrameImage,
 } from '../services/supabaseService';
+import AdminCustomerQuotes from './AdminCustomerQuotes';
 
 interface AdminFramesPanelProps {
   onNavigateToCatalog: () => void;
+  onOpenQuoteInManager: (quote: OpticalQuote) => void;
 }
 
 const FACE_SHAPES_OPTIONS = [
@@ -46,7 +49,12 @@ const SHAPE_OPTIONS: Array<{ value: EyewearFrame['shape']; label: string }> = [
   { value: 'geometrico', label: 'Geométrico' },
 ];
 
-export default function AdminFramesPanel({ onNavigateToCatalog }: AdminFramesPanelProps) {
+export default function AdminFramesPanel({
+  onNavigateToCatalog,
+  onOpenQuoteInManager,
+}: AdminFramesPanelProps) {
+  const [adminTab, setAdminTab] = useState<'quotes' | 'frames'>('quotes');
+  const [quotesCount, setQuotesCount] = useState<number>(0);
   const [name, setName] = useState('');
   const [brand, setBrand] = useState('Ótica Rapido Exclusive');
   const [price, setPrice] = useState('');
@@ -76,6 +84,12 @@ export default function AdminFramesPanel({ onNavigateToCatalog }: AdminFramesPan
       if (active) {
         setCustomFrames(frames);
         setIsLoadingList(false);
+      }
+    });
+
+    fetchQuotes().then((quotes) => {
+      if (active) {
+        setQuotesCount(quotes.length);
       }
     });
 
@@ -203,47 +217,85 @@ export default function AdminFramesPanel({ onNavigateToCatalog }: AdminFramesPan
   return (
     <div className="py-6 space-y-8 text-left">
       {/* Admin Hero Header */}
-      <div className="bg-sapphire-950 text-white rounded-3xl p-6 md:p-10 border border-sapphire-900 shadow-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
-        <div>
-          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-gold-500/15 border border-gold-400/30 font-mono text-[10px] text-gold-400 font-bold uppercase tracking-wider mb-3">
-            <Sparkles className="h-3.5 w-3.5" /> Painel Administrativo • /admin
-          </span>
-          <h2 className="font-display text-2xl md:text-4xl font-black tracking-tight text-white">
-            Gestão de Catálogo de Armações
-          </h2>
-          <p className="font-sans text-slate-300 text-xs md:text-sm mt-2 max-w-2xl leading-relaxed">
-            Cadastre novos modelos com foto, preço, formato e recomendação facial. As armações publicadas aqui aparecem automaticamente na vitrine principal do Catálogo.
-          </p>
+      <div className="bg-sapphire-950 text-white rounded-3xl p-6 md:p-10 border border-sapphire-900 shadow-xl space-y-6">
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
+          <div>
+            <p className="font-mono text-[11px] text-gold-400 font-semibold tracking-wider mb-2">
+              Painel Administrativo · /admin
+            </p>
+            <h2 className="font-display text-2xl md:text-4xl font-black tracking-tight text-white">
+              Gestão de Orçamentos &amp; Catálogo
+            </h2>
+            <p className="font-sans text-slate-300 text-xs md:text-sm mt-2 max-w-2xl leading-relaxed">
+              Crie orçamentos personalizados para clientes com envio direto pelo WhatsApp ou cobrança Pix/Link, e publique novas armações na vitrine em tempo real.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={onNavigateToCatalog}
+            className="px-5 py-2.5 bg-gold-500 hover:bg-gold-400 text-slate-950 rounded-xl font-sans text-xs font-bold flex items-center gap-2 shadow-md transition-all cursor-pointer flex-shrink-0 whitespace-nowrap"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            Ver Vitrine do Catálogo
+          </button>
         </div>
 
-        <button
-          type="button"
-          onClick={onNavigateToCatalog}
-          className="px-5 py-2.5 bg-gold-500 hover:bg-gold-400 text-slate-950 rounded-xl font-sans text-xs font-bold flex items-center gap-2 shadow-md transition-all cursor-pointer flex-shrink-0"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          Ver Vitrine do Catálogo
-        </button>
+        {/* Admin Module Switcher */}
+        <div className="flex flex-wrap items-center gap-1.5 p-1 bg-slate-900/90 border border-slate-800 rounded-xl w-fit">
+          <button
+            type="button"
+            onClick={() => setAdminTab('quotes')}
+            className={`px-4 py-2 rounded-lg text-xs font-bold flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap ${
+              adminTab === 'quotes'
+                ? 'bg-gold-500 text-slate-950 shadow-sm'
+                : 'text-slate-300 hover:text-white'
+            }`}
+          >
+            <FileText className="h-4 w-4" />
+            <span>Orçamentos de Clientes ({quotesCount})</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setAdminTab('frames')}
+            className={`px-4 py-2 rounded-lg text-xs font-bold flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap ${
+              adminTab === 'frames'
+                ? 'bg-gold-500 text-slate-950 shadow-sm'
+                : 'text-slate-300 hover:text-white'
+            }`}
+          >
+            <Glasses className="h-4 w-4" />
+            <span>Catálogo de Armações ({customFrames.length})</span>
+          </button>
+        </div>
       </div>
 
-      {feedback && (
-        <div
-          className={`p-4 rounded-2xl border flex items-center gap-3 text-xs font-medium ${
-            feedback.type === 'success'
-              ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
-              : 'bg-rose-50 border-rose-200 text-rose-900'
-          }`}
-        >
-          {feedback.type === 'success' ? (
-            <CheckCircle2 className="h-5 w-5 text-emerald-600 flex-shrink-0" />
-          ) : (
-            <AlertCircle className="h-5 w-5 text-rose-600 flex-shrink-0" />
+      {adminTab === 'quotes' ? (
+        <AdminCustomerQuotes
+          customFrames={customFrames}
+          onOpenQuoteInManager={onOpenQuoteInManager}
+          onQuotesCountChange={setQuotesCount}
+        />
+      ) : (
+        <>
+          {feedback && (
+            <div
+              className={`p-4 rounded-2xl border flex items-center gap-3 text-xs font-medium ${
+                feedback.type === 'success'
+                  ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                  : 'bg-rose-50 border-rose-200 text-rose-900'
+              }`}
+            >
+              {feedback.type === 'success' ? (
+                <CheckCircle2 className="h-5 w-5 text-emerald-600 flex-shrink-0" />
+              ) : (
+                <AlertCircle className="h-5 w-5 text-rose-600 flex-shrink-0" />
+              )}
+              <span>{feedback.message}</span>
+            </div>
           )}
-          <span>{feedback.message}</span>
-        </div>
-      )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
         {/* FORMULÁRIO DE CADASTRO (7 COLS) */}
         <form
           onSubmit={handleSubmit}
@@ -611,6 +663,8 @@ export default function AdminFramesPanel({ onNavigateToCatalog }: AdminFramesPan
           )}
         </div>
       </div>
+        </>
+      )}
     </div>
   );
 }

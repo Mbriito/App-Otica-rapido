@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { OpticalQuote, OpticalReceipt, EyewearFrame, MedicalPrescription, CustomerSession } from '../types';
-import { Receipt, FileText, Printer, Plus, Trash2, Edit3, Send, Check, RefreshCw, MessageSquare, Briefcase, QrCode, Link, ExternalLink, Wallet, Copy, CreditCard, Sparkles, AlertCircle, Layers } from 'lucide-react';
+import { Receipt, FileText, Printer, Plus, Trash2, Edit3, Send, Check, RefreshCw, MessageSquare, Briefcase, QrCode, Link, ExternalLink, Wallet, Copy, CreditCard, Sparkles, AlertCircle, Layers, Save } from 'lucide-react';
 import LensTreatmentComparison, { LensTreatment, LENS_TREATMENTS } from './LensTreatmentComparison';
+import { saveQuoteRecord } from '../services/supabaseService';
 
 interface QuoteReceiptManagerProps {
   lastSelectedFrame?: EyewearFrame;
@@ -10,6 +11,7 @@ interface QuoteReceiptManagerProps {
   selectedLensPrice?: number;
   linkedPrescription?: MedicalPrescription;
   customerSession?: CustomerSession | null;
+  initialQuote?: OpticalQuote;
 }
 
 export default function QuoteReceiptManager({
@@ -18,11 +20,14 @@ export default function QuoteReceiptManager({
   selectedLensType = '',
   selectedLensPrice = 0,
   linkedPrescription,
-  customerSession
+  customerSession,
+  initialQuote
 }: QuoteReceiptManagerProps) {
   const [activeTab, setActiveTab] = useState<'quote' | 'receipt'>('quote');
   const [selectedTreatmentId, setSelectedTreatmentId] = useState<string>('filtro_azul');
   const [treatmentToast, setTreatmentToast] = useState<string | null>(null);
+  const [isSavingToAdmin, setIsSavingToAdmin] = useState<boolean>(false);
+  const [saveQuoteFeedback, setSaveQuoteFeedback] = useState<string | null>(null);
   
   // Payment gateway states
   const [paymentType, setPaymentType] = useState<'pix' | 'link'>('pix');
@@ -51,8 +56,22 @@ export default function QuoteReceiptManager({
     sellerName: 'Consultora Amanda - Filial Paulista'
   });
 
+  // Load quote passed directly from the Admin Panel (/admin)
+  useEffect(() => {
+    if (!initialQuote) return;
+    setQuote({
+      ...initialQuote,
+      items: initialQuote.items.map((it) => ({
+        ...it,
+        frame: { ...it.frame },
+      })),
+    });
+    setActiveTab('quote');
+  }, [initialQuote]);
+
   // Load selected frame in catalog to current quota items list automatically if exists
   useEffect(() => {
+    if (initialQuote && !lastSelectedFrame) return;
     if (lastSelectedFrame) {
       setQuote(prev => {
         const newItem = {
@@ -77,7 +96,7 @@ export default function QuoteReceiptManager({
         const defaultFrame: EyewearFrame = {
           id: 'def1',
           name: 'Classic Acetate Round',
-          brand: 'Aura Eyewear',
+          brand: 'Ótica Rapido',
           price: 350.00,
           category: 'grau',
           gender: 'unissex',
@@ -104,7 +123,7 @@ export default function QuoteReceiptManager({
         };
       });
     }
-  }, [lastSelectedFrame, selectedColor, selectedLensType, selectedLensPrice, linkedPrescription]);
+  }, [lastSelectedFrame, selectedColor, selectedLensType, selectedLensPrice, linkedPrescription, initialQuote]);
 
   // Recibos State
   const [receipt, setReceipt] = useState<OpticalReceipt>({
@@ -116,11 +135,11 @@ export default function QuoteReceiptManager({
     customerPhone: '(11) 98888-7777',
     amount: 450.00,
     amountWritten: 'Quatrocentos e cinquenta reais',
-    descriptionOfServices: 'Compra de 01 Armação de Grau Aura Eyewear preta com lentes de grau monofocais antirreflexo corporativas.',
+    descriptionOfServices: 'Compra de 01 Armação de Grau Ótica Rapido preta com lentes de grau monofocais antirreflexo corporativas.',
     paymentMethod: 'Pix à vista',
-    sellerName: 'Gerente Carlos S. - Ótica Visão',
-    cnpj: '12.345.678/0001-90',
-    companyName: 'Ótica Visão Ltda.'
+    sellerName: 'Administrador - Ótica Rapido',
+    cnpj: '48.912.450/0001-88',
+    companyName: 'Ótica Rapido Ltda.'
   });
 
   // Reset payment status on document changes
@@ -128,9 +147,9 @@ export default function QuoteReceiptManager({
     setPaymentStatus('aguardando');
   }, [activeTab, quote.total, receipt.amount]);
 
-  // Auto-fill customer identification when passwordless session is active
+  // Auto-fill customer identification when passwordless session is active (only if not viewing an admin quote)
   useEffect(() => {
-    if (!customerSession) return;
+    if (!customerSession || initialQuote) return;
     setQuote((prev) => ({
       ...prev,
       customerName: customerSession.fullName || prev.customerName,
@@ -142,7 +161,7 @@ export default function QuoteReceiptManager({
       customerName: customerSession.fullName || prev.customerName,
       customerPhone: customerSession.phone || prev.customerPhone,
     }));
-  }, [customerSession]);
+  }, [customerSession, initialQuote]);
 
   const updateQuoteField = (field: keyof OpticalQuote, value: any) => {
     setQuote(prev => {
@@ -211,13 +230,13 @@ export default function QuoteReceiptManager({
   const getPixPayload = () => {
     const totalAmount = activeTab === 'quote' ? quote.total : receipt.amount;
     const documentId = activeTab === 'quote' ? quote.quoteNumber : receipt.receiptNumber;
-    return `00020101021226870014br.gov.bcb.pix2565pix.oticavisao.com.br/cob/doc${documentId.replace(/[^a-zA-Z0-9]/g, '')}5204000053039865407${totalAmount.toFixed(2)}5802BR5911Otica Visao6009Sao Paulo62070503***6304`;
+    return `00020101021226870014br.gov.bcb.pix2565pix.oticarapido.com.br/cob/doc${documentId.replace(/[^a-zA-Z0-9]/g, '')}5204000053039865407${totalAmount.toFixed(2)}5802BR5912Otica Rapido6009Sao Paulo62070503***6304`;
   };
 
   const getPaymentLink = () => {
     const totalAmount = activeTab === 'quote' ? quote.total : receipt.amount;
     const documentId = activeTab === 'quote' ? quote.quoteNumber : receipt.receiptNumber;
-    return `https://pagar.oticavisao.com.br/checkout/doc_${documentId.replace(/[^a-zA-Z0-9]/g, '')}?gate=${acquirer}&installments=${encodeURIComponent(installments)}&amt=${totalAmount}`;
+    return `https://pagar.oticarapido.com.br/checkout/doc_${documentId.replace(/[^a-zA-Z0-9]/g, '')}?gate=${acquirer}&installments=${encodeURIComponent(installments)}&amt=${totalAmount}`;
   };
 
   const copyToClipboard = (text: string, type: 'pix' | 'link') => {
@@ -317,9 +336,9 @@ export default function QuoteReceiptManager({
           amountWritten: getWrittenOutBRL(totalAmount),
           descriptionOfServices: `Compra de óculos sob medida realizada a domicílio com receita vinculada. Óculos: ${itemsDescription}.`,
           paymentMethod: paymentType === 'pix' ? 'Pix à vista (Pago instantaneamente)' : `Link de Pagamento - ${installments.toUpperCase()} (Aprovado via ${acquirer.toUpperCase()})`,
-          sellerName: quote.sellerName || 'Gerente Carlos S. - Ótica Visão',
-          cnpj: '12.345.678/0001-90',
-          companyName: 'Ótica Visão Ltda.'
+          sellerName: quote.sellerName || 'Administrador - Ótica Rapido',
+          cnpj: '48.912.450/0001-88',
+          companyName: 'Ótica Rapido Ltda.'
         });
       } else {
         // If we are in 'receipt' mode already, update its payment method
@@ -331,30 +350,63 @@ export default function QuoteReceiptManager({
     }, 1200);
   };
 
+  const handleSaveQuoteToAdmin = async () => {
+    setIsSavingToAdmin(true);
+    setSaveQuoteFeedback(null);
+    try {
+      const saved = await saveQuoteRecord({
+        ...quote,
+        createdBy: quote.createdBy || 'admin',
+        status: quote.status || 'rascunho',
+      });
+      setQuote(saved);
+      setSaveQuoteFeedback(`Orçamento ${saved.quoteNumber} salvo no Painel Admin!`);
+      setTimeout(() => setSaveQuoteFeedback(null), 4000);
+    } finally {
+      setIsSavingToAdmin(false);
+    }
+  };
+
   const handlePrint = () => {
     window.print();
   };
 
   // Build formatted text to share on WhatsApp
   const shareQuoteWhatsApp = () => {
-    const text = `*ÓTICA VISÃO - ORÇAMENTO EXCLUSIVO*\n\n` +
+    const cleanPhone = quote.customerPhone.replace(/\D/g, '');
+    const targetNumber =
+      cleanPhone.length >= 10
+        ? cleanPhone.startsWith('55')
+          ? cleanPhone
+          : `55${cleanPhone}`
+        : '5511947069414';
+
+    const text = `*ÓTICA RAPIDO - ORÇAMENTO EXCLUSIVO*\n\n` +
       `*Número:* ${quote.quoteNumber}\n` +
       `*Cliente:* ${quote.customerName}\n` +
       `*Validade:* Até ${quote.validUntil.split('-').reverse().join('/')}\n\n` +
       `*PRODUTO(S) SELECIONADO(S):*\n` +
-      quote.items.map((item, i) => `${i+1}) ${item.frame.name} (${item.selectedColor}) + Lentes: ${item.lensType} -> R$ ${(item.frame.price + item.lensPrice).toFixed(2)}`).join('\n') + `\n\n` +
+      quote.items.map((item, i) => `${i+1}) ${item.frame.name} (${item.selectedColor}) + Lentes: ${item.lensType} -> R$ ${(item.frame.price + item.lensPrice).toFixed(2).replace('.', ',')}`).join('\n') + `\n\n` +
       `*Subtotal:* R$ ${quote.subtotal.toFixed(2).replace('.', ',')}\n` +
       `*Desconto Especial:* R$ ${quote.discount.toFixed(2).replace('.', ',')}\n` +
       `*TOTAL ESTIMADO:* R$ ${quote.total.toFixed(2).replace('.', ',')}\n\n` +
       `*Forma de Pagamento sugerida:* ${quote.paymentMethod}\n` +
-      `*Vendedor(a):* ${quote.sellerName}\n\n` +
-      `Deseja agendar uma visita física na nossa filial para aprovar esse orçamento? Respondendo essa mensagem você confirma o atendimento!`;
+      `*Consultor(a):* ${quote.sellerName}\n\n` +
+      `Respondendo esta mensagem você aprova o orçamento ou solicita o envio do Pix / link de pagamento!`;
     
-    return `https://wa.me/5511947069414?text=${encodeURIComponent(text)}`;
+    return `https://wa.me/${targetNumber}?text=${encodeURIComponent(text)}`;
   };
 
   const shareReceiptWhatsApp = () => {
-    const text = `*ÓTICA VISÃO - COMPROVANTE DE RECIBO*\n\n` +
+    const cleanPhone = receipt.customerPhone.replace(/\D/g, '');
+    const targetNumber =
+      cleanPhone.length >= 10
+        ? cleanPhone.startsWith('55')
+          ? cleanPhone
+          : `55${cleanPhone}`
+        : '5511947069414';
+
+    const text = `*ÓTICA RAPIDO - COMPROVANTE DE RECIBO*\n\n` +
       `*Número:* ${receipt.receiptNumber}\n` +
       `*Data:* ${receipt.date.split('-').reverse().join('/')}\n` +
       `*Emitente:* ${receipt.companyName} (CNPJ: ${receipt.cnpj})\n\n` +
@@ -362,9 +414,9 @@ export default function QuoteReceiptManager({
       `"${receipt.descriptionOfServices}"\n\n` +
       `*Método de Liquidação:* ${receipt.paymentMethod}\n` +
       `*Responsável pela Emissão:* ${receipt.sellerName}\n\n` +
-      `Obrigado por escolher a nossa Ótica! Sua visão merece o melhor cuidado de especialista.`;
+      `Obrigado por escolher a Ótica Rapido! Sua visão merece o melhor cuidado de especialista.`;
     
-    return `https://wa.me/5511947069414?text=${encodeURIComponent(text)}`;
+    return `https://wa.me/${targetNumber}?text=${encodeURIComponent(text)}`;
   };
 
   return (
@@ -612,15 +664,43 @@ export default function QuoteReceiptManager({
                   />
                 </div>
 
-                <a
-                  href={shareQuoteWhatsApp()}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="w-full mt-4 py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-sans font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition-all shadow-md"
-                >
-                  <MessageSquare className="h-4 w-4" />
-                  Enviar Orçamento pelo WhatsApp
-                </a>
+                <div className="flex flex-col gap-2 pt-2">
+                  <button
+                    type="button"
+                    disabled={isSavingToAdmin}
+                    onClick={handleSaveQuoteToAdmin}
+                    className="w-full py-2.5 bg-sapphire-950 hover:bg-sapphire-900 disabled:opacity-60 text-gold-400 font-sans font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition-all shadow-sm cursor-pointer"
+                  >
+                    {isSavingToAdmin ? (
+                      <>
+                        <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                        Salvando no Painel Admin...
+                      </>
+                    ) : (
+                      <>
+                        <Save className="h-3.5 w-3.5" />
+                        Salvar Orçamento no Painel Admin
+                      </>
+                    )}
+                  </button>
+
+                  {saveQuoteFeedback && (
+                    <div className="p-2 bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] font-semibold rounded-lg flex items-center gap-1.5">
+                      <Check className="h-3.5 w-3.5 text-emerald-600 flex-shrink-0" />
+                      <span>{saveQuoteFeedback}</span>
+                    </div>
+                  )}
+
+                  <a
+                    href={shareQuoteWhatsApp()}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-sans font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition-all shadow-md"
+                  >
+                    <MessageSquare className="h-4 w-4" />
+                    Enviar Orçamento pelo WhatsApp
+                  </a>
+                </div>
               </div>
             ) : (
               // RECEIPT EDIT FIELDS
@@ -994,7 +1074,7 @@ export default function QuoteReceiptManager({
             )}
             
             <p className="text-[8px] text-slate-400 font-mono italic leading-normal text-center bg-slate-50 p-1.5 rounded-lg border border-slate-100">
-              Operação integrada ao sistema de gestão financeira Ótica Visão. Em conformidade com as diretivas seguras PCI-DSS.
+              Operação integrada ao sistema de gestão financeira Ótica Rapido. Em conformidade com as diretivas seguras PCI-DSS.
             </p>
           </div>
         </div>
@@ -1011,10 +1091,10 @@ export default function QuoteReceiptManager({
                 <div className="flex justify-between items-start border-b-2 border-slate-800 pb-5 mb-6">
                   <div>
                     <h2 className="font-display font-black text-2xl uppercase tracking-widest text-slate-900 leading-none">
-                      ÓTICA<span className="text-slate-500 font-light">VISÃO</span>
+                      ÓTICA<span className="text-slate-500 font-light">RAPIDO</span>
                     </h2>
-                    <p className="font-mono text-[9px] uppercase text-slate-500 tracking-wider mt-1">Atendimento Digital & a Domicílio</p>
-                    <p className="text-[10px] text-slate-400 mt-1">CNPJ: 12.345.678/0001-90</p>
+                    <p className="font-mono text-[9px] uppercase text-slate-500 tracking-wider mt-1">Atendimento Digital &amp; a Domicílio</p>
+                    <p className="text-[10px] text-slate-400 mt-1">CNPJ: 48.912.450/0001-88</p>
                   </div>
                   <div className="text-right">
                     <span className="inline-block px-3 py-1 bg-slate-900 text-white text-[10px] font-mono tracking-wider rounded uppercase font-bold">
@@ -1130,7 +1210,7 @@ export default function QuoteReceiptManager({
                 <div className="flex justify-between items-start border-b-2 border-slate-800 pb-5 mb-8">
                   <div>
                     <h2 className="font-display font-black text-2xl uppercase tracking-widest text-slate-900 leading-none">
-                      ÓTICA<span className="text-slate-500 font-light">VISÃO</span>
+                      ÓTICA<span className="text-slate-500 font-light">RAPIDO</span>
                     </h2>
                     <p className="text-[10px] text-slate-400 mt-1">CNPJ: {receipt.cnpj}</p>
                     <p className="text-[10px] text-slate-400">{receipt.companyName}</p>

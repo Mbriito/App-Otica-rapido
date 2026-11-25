@@ -94,10 +94,34 @@ CREATE TABLE IF NOT EXISTS public.lgpd_requests (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- 6. TABELA DE ORÇAMENTOS DE CLIENTES (Painel /admin & Central de Orçamentos)
+CREATE TABLE IF NOT EXISTS public.quotes (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  quote_number TEXT NOT NULL UNIQUE,
+  customer_id UUID REFERENCES public.customers(id) ON DELETE SET NULL,
+  customer_name TEXT NOT NULL,
+  customer_phone TEXT NOT NULL,
+  customer_email TEXT DEFAULT '',
+  customer_cpf TEXT DEFAULT '',
+  items JSONB NOT NULL DEFAULT '[]'::jsonb,
+  subtotal NUMERIC(10, 2) NOT NULL DEFAULT 0,
+  discount NUMERIC(10, 2) NOT NULL DEFAULT 0,
+  total NUMERIC(10, 2) NOT NULL DEFAULT 0,
+  payment_method TEXT NOT NULL DEFAULT 'Pix à vista',
+  observations TEXT DEFAULT '',
+  seller_name TEXT NOT NULL DEFAULT 'Administrador - Ótica Rapido',
+  quote_date DATE NOT NULL DEFAULT CURRENT_DATE,
+  valid_until DATE NOT NULL,
+  status TEXT NOT NULL DEFAULT 'rascunho' CHECK (status IN ('rascunho', 'enviado', 'aprovado', 'cancelado')),
+  created_by TEXT NOT NULL DEFAULT 'admin' CHECK (created_by IN ('admin', 'cliente')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- ============================================================================
--- HABILITAR REALTIME PARA O CATÁLOGO DE ARMAÇÕES
+-- HABILITAR REALTIME PARA O CATÁLOGO DE ARMAÇÕES E ORÇAMENTOS
 -- ============================================================================
 ALTER PUBLICATION supabase_realtime ADD TABLE public.frames;
+ALTER PUBLICATION supabase_realtime ADD TABLE public.quotes;
 
 -- ============================================================================
 -- SEGURANÇA & RLS (Row Level Security - Conformidade LGPD)
@@ -107,6 +131,7 @@ ALTER TABLE public.customers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.prescriptions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.home_visit_appointments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.lgpd_requests ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.quotes ENABLE ROW LEVEL SECURITY;
 
 -- Catálogo de armações: leitura pública na vitrine; escrita para gestão do painel
 CREATE POLICY "Catalogo leitura publica" ON public.frames
@@ -148,6 +173,19 @@ CREATE POLICY "Agendamentos leitura controlada" ON public.home_visit_appointment
 -- Solicitações LGPD: inserção pública para exercício de direitos (Art. 18)
 CREATE POLICY "LGPD insercao titular" ON public.lgpd_requests
   FOR INSERT WITH CHECK (true);
+
+-- Orçamentos de clientes (Admin & Atendimento)
+CREATE POLICY "Orcamentos leitura admin" ON public.quotes
+  FOR SELECT USING (true);
+
+CREATE POLICY "Orcamentos insercao admin" ON public.quotes
+  FOR INSERT WITH CHECK (true);
+
+CREATE POLICY "Orcamentos atualizacao admin" ON public.quotes
+  FOR UPDATE USING (true);
+
+CREATE POLICY "Orcamentos exclusao admin" ON public.quotes
+  FOR DELETE USING (true);
 
 -- ============================================================================
 -- STORAGE BUCKETS (Imagens de Armações e Receitas Médicas)
