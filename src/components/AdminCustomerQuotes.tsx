@@ -6,32 +6,52 @@ import {
   Save,
   Search,
   MessageSquare,
-  ExternalLink,
+  Download,
   Edit3,
   CheckCircle2,
   AlertCircle,
   RefreshCw,
   User,
   Glasses,
+  Eye,
   RotateCcw,
+  Copy,
+  Check,
+  X,
 } from 'lucide-react';
 import {
   CustomerSession,
   EyewearFrame,
+  MedicalPrescription,
   OpticalQuote,
   QuoteStatus,
+  SavedPrescriptionRecord,
   SelectedItem,
 } from '../types';
 import { premiumFrames } from '../data/frames';
 import { LENS_TREATMENTS } from './LensTreatmentComparison';
 import {
   deleteQuoteRecord,
+  fetchPrescriptions,
   fetchQuotes,
   fetchRegisteredCustomers,
   saveQuoteRecord,
+  subscribeToPrescriptions,
   subscribeToQuotes,
   updateQuoteStatus,
 } from '../services/supabaseService';
+import {
+  buildQuoteSummaryText,
+  buildQuoteWhatsAppUrl,
+  calculateQuoteTotals,
+  createQuoteNumber,
+  formatBRL,
+  formatDateBR,
+  getDefaultValidUntil,
+  getEffectivePrescription,
+  getQuoteModalityLabel,
+  isQuoteWithFrame,
+} from '../utils/quoteUtils';
 
 interface AdminCustomerQuotesProps {
   customFrames: EyewearFrame[];
@@ -70,37 +90,25 @@ const PAYMENT_METHOD_OPTIONS = [
 
 const STATUS_META: Record<
   QuoteStatus,
-  { label: string; textClass: string; selectClass: string }
+  { label: string; selectClass: string }
 > = {
   rascunho: {
     label: 'Rascunho',
-    textClass: 'text-slate-600',
     selectClass: 'bg-slate-100 text-slate-700 border-slate-200',
   },
   enviado: {
     label: 'Enviado',
-    textClass: 'text-amber-700',
     selectClass: 'bg-amber-50 text-amber-800 border-amber-200',
   },
   aprovado: {
     label: 'Aprovado',
-    textClass: 'text-emerald-700',
     selectClass: 'bg-emerald-50 text-emerald-800 border-emerald-200',
   },
   cancelado: {
     label: 'Cancelado',
-    textClass: 'text-rose-700',
     selectClass: 'bg-rose-50 text-rose-800 border-rose-200',
   },
 };
-
-function createQuoteNumber(): string {
-  return `OR-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
-}
-
-function getDefaultValidUntil(): string {
-  return new Date(Date.now() + 15 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-}
 
 function createEmptyDraftItem(defaultFrame?: EyewearFrame): DraftItem {
   return {
@@ -116,33 +124,33 @@ function createEmptyDraftItem(defaultFrame?: EyewearFrame): DraftItem {
   };
 }
 
-function formatBRL(value: number): string {
-  return value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-}
-
 export default function AdminCustomerQuotes({
   customFrames,
   onOpenQuoteInManager,
   onQuotesCountChange,
 }: AdminCustomerQuotesProps) {
-  const allFrames = useMemo(
-    () => [...customFrames, ...premiumFrames],
-    [customFrames]
-  );
+  const allFrames = useMemo(() => [...customFrames, ...premiumFrames], [customFrames]);
 
   // Saved data
   const [quotes, setQuotes] = useState<OpticalQuote[]>([]);
   const [customers, setCustomers] = useState<CustomerSession[]>([]);
+  const [prescriptions, setPrescriptions] = useState<SavedPrescriptionRecord[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   // Filters for saved quotes
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'todos' | QuoteStatus>('todos');
+  const [copiedQuoteId, setCopiedQuoteId] = useState<string | null>(null);
 
   // Form state
   const [editingQuoteId, setEditingQuoteId] = useState<string | null>(null);
   const [quoteNumber, setQuoteNumber] = useState<string>(createQuoteNumber);
+  const [includeFrame, setIncludeFrame] = useState<boolean>(true);
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>('');
+  const [selectedPrescriptionId, setSelectedPrescriptionId] = useState<string>('');
+  const [linkedPrescription, setLinkedPrescription] = useState<MedicalPrescription | undefined>(
+    undefined
+  );
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
   const [customerEmail, setCustomerEmail] = useState('');
@@ -160,6 +168,7 @@ export default function AdminCustomerQuotes({
   ]);
 
   const [isSaving, setIsSaving] = useState(false);
+  const [lastSavedQuote, setLastSavedQuote] = useState<OpticalQuote | null>(null);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(
     null
   );
@@ -167,39 +176,145 @@ export default function AdminCustomerQuotes({
   useEffect(() => {
     let active = true;
 
-    Promise.all([fetchQuotes(), fetchRegisteredCustomers()]).then(
-      ([loadedQuotes, loadedCustomers]) => {
+    Promise.all([fetchQuotes(), fetchRegisteredCustomers(), fetchPrescriptions()]).then(
+      ([loadedQuotes, loadedCustomers, loadedRx]) => {
         if (!active) return;
         setQuotes(loadedQuotes);
         setCustomers(loadedCustomers);
+        setPrescriptions(loadedRx);
         setIsLoading(false);
         onQuotesCountChange?.(loadedQuotes.length);
       }
     );
 
-    const unsubscribe = subscribeToQuotes((updated) => {
+    const unsubQuotes = subscribeToQuotes((updated) => {
       if (!active) return;
       setQuotes(updated);
       onQuotesCountChange?.(updated.length);
     });
 
+    const unsubRx = subscribeToPrescriptions((updated) => {
+      if (!active) return;
+      setPrescriptions(updated);
+    });
+
     return () => {
       active = false;
-      unsubscribe();
+      unsubQuotes();
+      unsubRx();
     };
   }, [onQuotesCountChange]);
 
-  // Financial calculation
-  const subtotal = useMemo(() => {
-    return draftItems.reduce((sum, item) => {
-      const fPrice = parseFloat(item.framePrice.replace(',', '.')) || 0;
-      const lPrice = parseFloat(item.lensPrice.replace(',', '.')) || 0;
-      return sum + fPrice + lPrice;
-    }, 0);
-  }, [draftItems]);
+  // Build SelectedItems array from draft state (respecting includeFrame)
+  const computedSelectedItems: SelectedItem[] = useMemo(() => {
+    return draftItems.map((draft, idx) => {
+      const matchedFrame = allFrames.find((f) => f.id === draft.frameId);
+      const framePrice = includeFrame
+        ? Math.max(0, parseFloat(draft.framePrice.replace(',', '.')) || 0)
+        : 0;
+      const lensPrice = Math.max(0, parseFloat(draft.lensPrice.replace(',', '.')) || 0);
+      const treatment = LENS_TREATMENTS.find((t) => t.id === draft.treatmentId);
+      const fullLensLabel = treatment ? `${draft.lensBase} + ${treatment.name}` : draft.lensBase;
 
-  const numericDiscount = parseFloat(discount.replace(',', '.')) || 0;
-  const total = Math.max(0, subtotal - numericDiscount);
+      const frameObj: EyewearFrame = includeFrame
+        ? matchedFrame
+          ? {
+              ...matchedFrame,
+              name: draft.frameName.trim() || matchedFrame.name,
+              brand: draft.frameBrand.trim() || matchedFrame.brand,
+              price: framePrice,
+            }
+          : {
+              id: `custom-${draft.id}`,
+              name: draft.frameName.trim() || 'Armação Personalizada',
+              brand: draft.frameBrand.trim() || 'Ótica Rapido',
+              price: framePrice,
+              category: 'grau',
+              gender: 'unissex',
+              shape: 'quadrado',
+              material: 'acetato',
+              imageUrl: '',
+              colors: [draft.selectedColor.trim() || 'Preto Clássico'],
+              description: '',
+              rating: 5,
+            }
+        : {
+            id: 'customer-own-frame',
+            name: 'Armação Própria do Cliente',
+            brand: 'Cliente',
+            price: 0,
+            category: 'grau',
+            gender: 'unissex',
+            shape: 'quadrado',
+            material: 'acetato',
+            imageUrl: '',
+            colors: ['Própria'],
+            description: '',
+            rating: 5,
+          };
+
+      return {
+        frame: frameObj,
+        selectedColor: includeFrame ? draft.selectedColor.trim() || 'Preto Clássico' : 'Armação Própria',
+        lensType: fullLensLabel,
+        lensPrice,
+        prescription: idx === 0 ? linkedPrescription : undefined,
+      };
+    });
+  }, [draftItems, allFrames, includeFrame, linkedPrescription]);
+
+  // Real-time financial calculation (strictly zeroing frame price when includeFrame === false)
+  const numericDiscount = Math.max(0, parseFloat(discount.replace(',', '.')) || 0);
+  const { subtotal, total } = useMemo(
+    () => calculateQuoteTotals(computedSelectedItems, numericDiscount, includeFrame),
+    [computedSelectedItems, numericDiscount, includeFrame]
+  );
+
+  // Live OpticalQuote object for instant WhatsApp preview & saving
+  const liveQuoteObject: OpticalQuote = useMemo(
+    () => ({
+      id: editingQuoteId || '',
+      quoteNumber: quoteNumber.trim() || createQuoteNumber(),
+      date: new Date().toISOString().split('T')[0],
+      validUntil,
+      customerId: selectedCustomerId || undefined,
+      customerName: customerName.trim(),
+      customerPhone: customerPhone.trim(),
+      customerEmail: customerEmail.trim(),
+      customerCpf: customerCpf.trim(),
+      includeFrame,
+      prescription: linkedPrescription,
+      items: computedSelectedItems,
+      subtotal,
+      discount: numericDiscount,
+      total,
+      paymentMethod,
+      observations: observations.trim(),
+      sellerName: sellerName.trim() || 'Administrador - Ótica Rapido',
+      status,
+      createdBy: 'admin',
+    }),
+    [
+      editingQuoteId,
+      quoteNumber,
+      validUntil,
+      selectedCustomerId,
+      customerName,
+      customerPhone,
+      customerEmail,
+      customerCpf,
+      includeFrame,
+      linkedPrescription,
+      computedSelectedItems,
+      subtotal,
+      numericDiscount,
+      total,
+      paymentMethod,
+      observations,
+      sellerName,
+      status,
+    ]
+  );
 
   const handleSelectRegisteredCustomer = (customerId: string) => {
     setSelectedCustomerId(customerId);
@@ -209,6 +324,20 @@ export default function AdminCustomerQuotes({
     setCustomerName(found.fullName || '');
     setCustomerPhone(found.phone || (found.identifierType === 'phone' ? found.identifier : ''));
     setCustomerEmail(found.email || (found.identifierType === 'email' ? found.identifier : ''));
+  };
+
+  const handleSelectSavedPrescription = (rxId: string) => {
+    setSelectedPrescriptionId(rxId);
+    if (!rxId) {
+      setLinkedPrescription(undefined);
+      return;
+    }
+    const found = prescriptions.find((r) => r.id === rxId);
+    if (!found) return;
+    setLinkedPrescription(found);
+    if (!customerName.trim() && found.patientName) {
+      setCustomerName(found.patientName);
+    }
   };
 
   const handleUpdateDraftItem = (itemId: string, patch: Partial<DraftItem>) => {
@@ -261,8 +390,12 @@ export default function AdminCustomerQuotes({
 
   const resetForm = () => {
     setEditingQuoteId(null);
+    setLastSavedQuote(null);
     setQuoteNumber(createQuoteNumber());
+    setIncludeFrame(true);
     setSelectedCustomerId('');
+    setSelectedPrescriptionId('');
+    setLinkedPrescription(undefined);
     setCustomerName('');
     setCustomerPhone('');
     setCustomerEmail('');
@@ -279,93 +412,47 @@ export default function AdminCustomerQuotes({
     setFeedback(null);
   };
 
-  const buildQuotePayload = (): Omit<OpticalQuote, 'id' | 'createdAt'> & { id?: string } => {
-    const items: SelectedItem[] = draftItems.map((draft) => {
-      const matchedFrame = allFrames.find((f) => f.id === draft.frameId);
-      const framePrice = parseFloat(draft.framePrice.replace(',', '.')) || 0;
-      const lensPrice = parseFloat(draft.lensPrice.replace(',', '.')) || 0;
-      const treatment = LENS_TREATMENTS.find((t) => t.id === draft.treatmentId);
-      const fullLensLabel = treatment ? `${draft.lensBase} + ${treatment.name}` : draft.lensBase;
-
-      const frameObj: EyewearFrame = matchedFrame
-        ? {
-            ...matchedFrame,
-            name: draft.frameName.trim() || matchedFrame.name,
-            brand: draft.frameBrand.trim() || matchedFrame.brand,
-            price: framePrice,
-          }
-        : {
-            id: `custom-${draft.id}`,
-            name: draft.frameName.trim() || 'Armação Personalizada',
-            brand: draft.frameBrand.trim() || 'Ótica Rapido',
-            price: framePrice,
-            category: 'grau',
-            gender: 'unissex',
-            shape: 'quadrado',
-            material: 'acetato',
-            imageUrl: '',
-            colors: [draft.selectedColor.trim() || 'Preto Clássico'],
-            description: '',
-            rating: 5,
-          };
-
-      return {
-        frame: frameObj,
-        selectedColor: draft.selectedColor.trim() || 'Preto Clássico',
-        lensType: fullLensLabel,
-        lensPrice,
-      };
-    });
-
-    return {
-      id: editingQuoteId || undefined,
-      quoteNumber: quoteNumber.trim() || createQuoteNumber(),
-      date: new Date().toISOString().split('T')[0],
-      validUntil,
-      customerId: selectedCustomerId || undefined,
-      customerName: customerName.trim(),
-      customerPhone: customerPhone.trim(),
-      customerEmail: customerEmail.trim(),
-      customerCpf: customerCpf.trim(),
-      items,
-      subtotal,
-      discount: numericDiscount,
-      total,
-      paymentMethod,
-      observations: observations.trim(),
-      sellerName: sellerName.trim() || 'Administrador - Ótica Rapido',
-      status,
-      createdBy: 'admin',
-    };
-  };
-
   const persistCurrentQuote = async (): Promise<OpticalQuote | null> => {
     setFeedback(null);
 
     if (!customerName.trim() || !customerPhone.trim()) {
       setFeedback({
         type: 'error',
-        message: 'Informe ao menos o nome e o WhatsApp do cliente para gerar o orçamento.',
+        message: 'Informe o nome e o WhatsApp do cliente para salvar o orçamento.',
       });
       return null;
     }
 
-    if (draftItems.some((item) => !item.frameName.trim())) {
+    if (includeFrame && draftItems.some((item) => !item.frameName.trim())) {
       setFeedback({
         type: 'error',
-        message: 'Preencha o nome da armação em todos os itens do orçamento.',
+        message: 'Preencha o nome da armação ou selecione a modalidade "Sem Armação".',
       });
       return null;
     }
 
     setIsSaving(true);
     try {
-      const saved = await saveQuoteRecord(buildQuotePayload());
+      const saved = await saveQuoteRecord({
+        ...liveQuoteObject,
+        id: editingQuoteId || undefined,
+      });
+
+      // Keep form fields populated & lock onto saved ID so admin can immediately send/print/edit
+      setEditingQuoteId(saved.id);
+      setQuoteNumber(saved.quoteNumber);
+      setLastSavedQuote(saved);
+      setQuotes((prev) => {
+        const next = [saved, ...prev.filter((q) => q.id !== saved.id)];
+        onQuotesCountChange?.(next.length);
+        return next;
+      });
+
       setFeedback({
         type: 'success',
-        message: editingQuoteId
-          ? `Orçamento ${saved.quoteNumber} atualizado com sucesso.`
-          : `Orçamento ${saved.quoteNumber} criado para ${saved.customerName} e salvo no histórico.`,
+        message: `Orçamento ${saved.quoteNumber} (${getQuoteModalityLabel(
+          includeFrame
+        )}) salvo para ${saved.customerName} — ${formatBRL(saved.total)}.`,
       });
       return saved;
     } catch {
@@ -381,17 +468,10 @@ export default function AdminCustomerQuotes({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const saved = await persistCurrentQuote();
-    if (saved) {
-      resetForm();
-      setFeedback({
-        type: 'success',
-        message: `Orçamento ${saved.quoteNumber} salvo para ${saved.customerName} (${formatBRL(saved.total)}).`,
-      });
-    }
+    await persistCurrentQuote();
   };
 
-  const handleSaveAndOpenPayment = async () => {
+  const handleSaveAndOpenProposal = async () => {
     const saved = await persistCurrentQuote();
     if (saved) {
       onOpenQuoteInManager(saved);
@@ -399,8 +479,11 @@ export default function AdminCustomerQuotes({
   };
 
   const handleEditQuote = (quote: OpticalQuote) => {
+    const withFrame = isQuoteWithFrame(quote);
     setEditingQuoteId(quote.id);
+    setLastSavedQuote(quote);
     setQuoteNumber(quote.quoteNumber);
+    setIncludeFrame(withFrame);
     setSelectedCustomerId(quote.customerId || '');
     setCustomerName(quote.customerName);
     setCustomerPhone(quote.customerPhone);
@@ -412,6 +495,10 @@ export default function AdminCustomerQuotes({
     setSellerName(quote.sellerName || 'Administrador - Ótica Rapido');
     setStatus(quote.status || 'rascunho');
     setObservations(quote.observations || '');
+
+    const rx = getEffectivePrescription(quote);
+    setLinkedPrescription(rx);
+    setSelectedPrescriptionId('');
 
     if (quote.items && quote.items.length > 0) {
       setDraftItems(
@@ -426,10 +513,13 @@ export default function AdminCustomerQuotes({
           return {
             id: `edit-${idx}-${Date.now()}`,
             frameId: matchedFrame ? matchedFrame.id : 'custom',
-            frameName: it.frame.name,
-            frameBrand: it.frame.brand,
-            selectedColor: it.selectedColor || 'Preto Clássico',
-            framePrice: String(it.frame.price || 0),
+            frameName:
+              it.frame.name === 'Armação Própria do Cliente'
+                ? allFrames[0]?.name || 'Armação Selecionada'
+                : it.frame.name,
+            frameBrand: it.frame.brand === 'Cliente' ? 'Ótica Rapido' : it.frame.brand,
+            selectedColor: it.selectedColor === 'Armação Própria' ? 'Preto Clássico' : it.selectedColor || 'Preto Clássico',
+            framePrice: String(it.frame.price || (withFrame ? 350 : 0)),
             lensBase: LENS_BASE_OPTIONS.includes(basePart) ? basePart : LENS_BASE_OPTIONS[0],
             treatmentId: matchedTreatment ? matchedTreatment.id : 'nenhum',
             lensPrice: String(it.lensPrice || 0),
@@ -451,41 +541,21 @@ export default function AdminCustomerQuotes({
     if (editingQuoteId === quoteId) {
       resetForm();
     }
-    setFeedback({ type: 'success', message: 'Orçamento removido da lista.' });
+    setFeedback({ type: 'success', message: 'Orçamento removido do histórico.' });
   };
 
-  const buildWhatsAppUrl = (quote: OpticalQuote) => {
-    const cleanPhone = quote.customerPhone.replace(/\D/g, '');
-    const targetNumber =
-      cleanPhone.length >= 10
-        ? cleanPhone.startsWith('55')
-          ? cleanPhone
-          : `55${cleanPhone}`
-        : '5511947069414';
-
-    const itemsLines = quote.items
-      .map(
-        (item, idx) =>
-          `${idx + 1}) ${item.frame.name} (${item.selectedColor}) + ${item.lensType} — ${formatBRL(
-            item.frame.price + item.lensPrice
-          )}`
-      )
-      .join('\n');
-
-    const text =
-      `*ÓTICA RAPIDO — ORÇAMENTO PERSONALIZADO*\n\n` +
-      `Olá, *${quote.customerName}*! Preparamos o seu orçamento:\n\n` +
-      `*Nº do Orçamento:* ${quote.quoteNumber}\n` +
-      `*Validade:* até ${quote.validUntil.split('-').reverse().join('/')}\n\n` +
-      `*ITENS:*\n${itemsLines}\n\n` +
-      `*Subtotal:* ${formatBRL(quote.subtotal)}\n` +
-      (quote.discount > 0 ? `*Desconto Especial:* - ${formatBRL(quote.discount)}\n` : '') +
-      `*TOTAL:* ${formatBRL(quote.total)}\n` +
-      `*Condição sugerida:* ${quote.paymentMethod}\n` +
-      `*Responsável:* ${quote.sellerName}\n\n` +
-      `Responda esta mensagem para aprovar ou solicitar seu link de pagamento / Pix.`;
-
-    return `https://wa.me/${targetNumber}?text=${encodeURIComponent(text)}`;
+  const handleCopyQuoteSummary = (quote: OpticalQuote) => {
+    const text = buildQuoteSummaryText(quote);
+    navigator.clipboard
+      .writeText(text)
+      .then(() => {
+        setCopiedQuoteId(quote.id);
+        setTimeout(() => setCopiedQuoteId(null), 2400);
+      })
+      .catch(() => {
+        setCopiedQuoteId(quote.id);
+        setTimeout(() => setCopiedQuoteId(null), 2400);
+      });
   };
 
   const filteredQuotes = useMemo(() => {
@@ -515,26 +585,50 @@ export default function AdminCustomerQuotes({
     <div className="space-y-6 text-left">
       {feedback && (
         <div
-          className={`p-4 rounded-2xl border flex items-center gap-3 text-xs font-medium ${
+          className={`p-4 rounded-2xl border flex flex-wrap items-center justify-between gap-3 text-xs font-medium ${
             feedback.type === 'success'
               ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
               : 'bg-rose-50 border-rose-200 text-rose-900'
           }`}
         >
-          {feedback.type === 'success' ? (
-            <CheckCircle2 className="h-5 w-5 text-emerald-600 flex-shrink-0" />
-          ) : (
-            <AlertCircle className="h-5 w-5 text-rose-600 flex-shrink-0" />
+          <div className="flex items-center gap-2.5">
+            {feedback.type === 'success' ? (
+              <CheckCircle2 className="h-5 w-5 text-emerald-600 flex-shrink-0" />
+            ) : (
+              <AlertCircle className="h-5 w-5 text-rose-600 flex-shrink-0" />
+            )}
+            <span>{feedback.message}</span>
+          </div>
+
+          {feedback.type === 'success' && lastSavedQuote && (
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => onOpenQuoteInManager(lastSavedQuote)}
+                className="px-3 py-1.5 bg-slate-900 text-gold-400 rounded-lg text-[11px] font-bold flex items-center gap-1.5 cursor-pointer"
+              >
+                <Download className="h-3.5 w-3.5" />
+                Baixar PDF
+              </button>
+              <a
+                href={buildQuoteWhatsAppUrl(lastSavedQuote)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[11px] font-bold flex items-center gap-1.5"
+              >
+                <MessageSquare className="h-3.5 w-3.5" />
+                Enviar WhatsApp
+              </a>
+            </div>
           )}
-          <span>{feedback.message}</span>
         </div>
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-        {/* FORMULÁRIO DE ORÇAMENTO PARA CLIENTE (7 COLS) */}
+        {/* FORMULÁRIO RÁPIDO DE ORÇAMENTO ADMIN (7 COLS) */}
         <form
           onSubmit={handleSubmit}
-          className="lg:col-span-7 bg-white border border-slate-200/90 rounded-3xl p-6 md:p-8 shadow-sm space-y-6"
+          className="lg:col-span-7 bg-white border border-slate-200/90 rounded-3xl p-6 md:p-8 shadow-xs space-y-6"
         >
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-4">
             <div className="flex items-center gap-2.5">
@@ -543,49 +637,95 @@ export default function AdminCustomerQuotes({
               </div>
               <div>
                 <h3 className="font-display font-black text-lg text-slate-900">
-                  {editingQuoteId ? `Editando Orçamento ${quoteNumber}` : 'Novo Orçamento para Cliente'}
+                  {editingQuoteId ? `Orçamento ${quoteNumber}` : 'Novo Orçamento para Cliente'}
                 </h3>
                 <p className="text-[11px] text-slate-500">
-                  Monte propostas sob medida, salve no banco e envie por WhatsApp ou Cobrança Pix/Link
+                  Fluxo rápido com ou sem armação, cálculo automático, PDF e envio direto no WhatsApp
                 </p>
               </div>
             </div>
 
-            {editingQuoteId && (
-              <button
-                type="button"
-                onClick={resetForm}
-                className="px-3 py-1.5 text-xs font-semibold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
-              >
-                <RotateCcw className="h-3.5 w-3.5" />
-                Cancelar Edição
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={resetForm}
+              className="px-3 py-1.5 text-xs font-semibold text-slate-700 hover:text-slate-950 bg-slate-100 hover:bg-slate-200 rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              Novo Orçamento
+            </button>
           </div>
 
-          {/* 1. DADOS DO CLIENTE */}
+          {/* BLOCO 1: CLIENTE & RECEITA */}
           <div className="space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <h4 className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
                 <User className="h-3.5 w-3.5 text-gold-600" />
-                1. Identificação do Cliente
+                1. Cliente e Receita
               </h4>
 
-              {customers.length > 0 && (
-                <select
-                  value={selectedCustomerId}
-                  onChange={(e) => handleSelectRegisteredCustomer(e.target.value)}
-                  className="px-3 py-1.5 border border-slate-200 rounded-lg text-xs bg-slate-50 text-slate-700 focus:ring-2 focus:ring-gold-500 outline-none max-w-full sm:max-w-[260px]"
-                >
-                  <option value="">Preencher de cliente cadastrado ({customers.length})...</option>
-                  {customers.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.fullName || 'Cliente'} — {c.phone || c.email || c.identifier}
-                    </option>
-                  ))}
-                </select>
-              )}
+              <div className="flex flex-wrap items-center gap-2">
+                {customers.length > 0 && (
+                  <select
+                    value={selectedCustomerId}
+                    onChange={(e) => handleSelectRegisteredCustomer(e.target.value)}
+                    className="px-2.5 py-1.5 border border-slate-200 rounded-lg text-[11px] bg-slate-50 text-slate-700 focus:ring-2 focus:ring-gold-500 outline-none max-w-[210px]"
+                  >
+                    <option value="">Cliente salvo ({customers.length})...</option>
+                    {customers.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.fullName || 'Cliente'} — {c.phone || c.email || c.identifier}
+                      </option>
+                    ))}
+                  </select>
+                )}
+
+                {prescriptions.length > 0 && (
+                  <select
+                    value={selectedPrescriptionId}
+                    onChange={(e) => handleSelectSavedPrescription(e.target.value)}
+                    className="px-2.5 py-1.5 border border-slate-200 rounded-lg text-[11px] bg-slate-50 text-slate-700 focus:ring-2 focus:ring-gold-500 outline-none max-w-[210px]"
+                  >
+                    <option value="">Puxar receita ({prescriptions.length})...</option>
+                    {prescriptions.map((rx) => (
+                      <option key={rx.id} value={rx.id}>
+                        {rx.patientName || 'Receita'} · OD {rx.od.spherical}/{rx.od.cylindrical}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
             </div>
+
+            {linkedPrescription && (
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between gap-3 text-[11px]">
+                <div className="font-mono tabular-nums text-slate-700 space-y-0.5">
+                  <span className="font-sans font-bold text-slate-900 block">
+                    Receita vinculada: {linkedPrescription.patientName || 'Paciente'}
+                  </span>
+                  <span className="block">
+                    OD: Esf {linkedPrescription.od.spherical || '0.00'} · Cil{' '}
+                    {linkedPrescription.od.cylindrical || '0.00'} · Eixo{' '}
+                    {linkedPrescription.od.axis || '0'}°
+                  </span>
+                  <span className="block">
+                    OE: Esf {linkedPrescription.oe.spherical || '0.00'} · Cil{' '}
+                    {linkedPrescription.oe.cylindrical || '0.00'} · Eixo{' '}
+                    {linkedPrescription.oe.axis || '0'}°
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLinkedPrescription(undefined);
+                    setSelectedPrescriptionId('');
+                  }}
+                  className="p-1.5 text-slate-400 hover:text-rose-600 rounded-lg cursor-pointer"
+                  title="Desvincular receita"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
@@ -629,7 +769,9 @@ export default function AdminCustomerQuotes({
                 />
               </div>
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1.5">CPF (Opcional)</label>
+                <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                  CPF (Opcional)
+                </label>
                 <input
                   type="text"
                   value={customerCpf}
@@ -652,12 +794,12 @@ export default function AdminCustomerQuotes({
             </div>
           </div>
 
-          {/* 2. ITENS DO ORÇAMENTO (ARMAÇÃO + LENTES) */}
+          {/* BLOCO 2: MODALIDADE (COM/SEM ARMAÇÃO) E ITENS */}
           <div className="space-y-4 pt-4 border-t border-slate-100">
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <h4 className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
                 <Glasses className="h-3.5 w-3.5 text-gold-600" />
-                2. Armações e Lentes ({draftItems.length})
+                2. Modalidade e Itens ({draftItems.length})
               </h4>
               <button
                 type="button"
@@ -665,8 +807,45 @@ export default function AdminCustomerQuotes({
                 className="px-3 py-1.5 text-xs font-bold text-slate-800 bg-slate-100 hover:bg-slate-200 rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
               >
                 <Plus className="h-3.5 w-3.5" />
-                Adicionar Óculos
+                {includeFrame ? 'Adicionar Óculos' : 'Adicionar Par de Lentes'}
               </button>
+            </div>
+
+            {/* Seletor Com Armação vs Sem Armação */}
+            <div className="space-y-1.5">
+              <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 rounded-xl">
+                <button
+                  type="button"
+                  onClick={() => setIncludeFrame(true)}
+                  className={`py-2.5 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                    includeFrame
+                      ? 'bg-slate-950 text-gold-400 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <Glasses className="h-4 w-4 flex-shrink-0" />
+                  <span>Com Armação</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIncludeFrame(false)}
+                  className={`py-2.5 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                    !includeFrame
+                      ? 'bg-slate-950 text-gold-400 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <Eye className="h-4 w-4 flex-shrink-0" />
+                  <span>Sem Armação (Somente Lentes)</span>
+                </button>
+              </div>
+              {!includeFrame && (
+                <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+                  <strong>Modalidade: Somente Lentes (Armação Própria do Cliente).</strong> O valor
+                  da armação é ignorado automaticamente e o cálculo considera apenas lentes +
+                  tratamentos − desconto.
+                </p>
+              )}
             </div>
 
             <div className="space-y-4">
@@ -679,7 +858,7 @@ export default function AdminCustomerQuotes({
                   >
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-bold text-slate-800">
-                        Item {idx + 1}
+                        Item {idx + 1} {!includeFrame && '· Somente Lentes'}
                       </span>
                       {draftItems.length > 1 && (
                         <button
@@ -693,119 +872,128 @@ export default function AdminCustomerQuotes({
                       )}
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                          Escolher do Catálogo
-                        </label>
-                        <select
-                          value={item.frameId}
-                          onChange={(e) => handleSelectCatalogFrame(item.id, e.target.value)}
-                          className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs bg-white focus:ring-2 focus:ring-gold-500 outline-none"
-                        >
-                          <option value="custom">Armação Personalizada / Avulsa</option>
-                          {customFrames.length > 0 && (
-                            <optgroup label="Armações Cadastradas no Admin">
-                              {customFrames.map((f) => (
-                                <option key={f.id} value={f.id}>
-                                  {f.name} ({f.brand}) {f.price > 0 ? `— ${formatBRL(f.price)}` : ''}
-                                </option>
-                              ))}
-                            </optgroup>
-                          )}
-                          <optgroup label="Modelos de Referência do Catálogo">
-                            {premiumFrames.map((f) => (
-                              <option key={f.id} value={f.id}>
-                                {f.referenceCode ? `${f.referenceCode} · ` : ''}
-                                {f.name}
-                              </option>
-                            ))}
-                          </optgroup>
-                        </select>
-                      </div>
+                    {includeFrame && (
+                      <>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          <div>
+                            <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                              Escolher do Catálogo
+                            </label>
+                            <select
+                              value={item.frameId}
+                              onChange={(e) => handleSelectCatalogFrame(item.id, e.target.value)}
+                              className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs bg-white focus:ring-2 focus:ring-gold-500 outline-none"
+                            >
+                              <option value="custom">Armação Personalizada / Avulsa</option>
+                              {customFrames.length > 0 && (
+                                <optgroup label="Armações Cadastradas no Admin">
+                                  {customFrames.map((f) => (
+                                    <option key={f.id} value={f.id}>
+                                      {f.name} ({f.brand}){' '}
+                                      {f.price > 0 ? `— ${formatBRL(f.price)}` : ''}
+                                    </option>
+                                  ))}
+                                </optgroup>
+                              )}
+                              <optgroup label="Modelos de Referência do Catálogo">
+                                {premiumFrames.map((f) => (
+                                  <option key={f.id} value={f.id}>
+                                    {f.referenceCode ? `${f.referenceCode} · ` : ''}
+                                    {f.name}
+                                  </option>
+                                ))}
+                              </optgroup>
+                            </select>
+                          </div>
 
-                      <div>
-                        <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                          Nome da Armação na Proposta *
-                        </label>
-                        <input
-                          type="text"
-                          required
-                          value={item.frameName}
-                          onChange={(e) =>
-                            handleUpdateDraftItem(item.id, { frameName: e.target.value })
-                          }
-                          placeholder="Ex: Armação Acetato Quadrado"
-                          className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-gold-500 outline-none"
-                        />
-                      </div>
-                    </div>
+                          <div>
+                            <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                              Nome da Armação na Proposta *
+                            </label>
+                            <input
+                              type="text"
+                              required={includeFrame}
+                              value={item.frameName}
+                              onChange={(e) =>
+                                handleUpdateDraftItem(item.id, { frameName: e.target.value })
+                              }
+                              placeholder="Ex: Armação Acetato Quadrado"
+                              className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-gold-500 outline-none"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pb-2 border-b border-slate-200/70">
+                          <div>
+                            <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                              Cor / Acabamento
+                            </label>
+                            {selectedFrameObj && selectedFrameObj.colors.length > 0 ? (
+                              <select
+                                value={item.selectedColor}
+                                onChange={(e) =>
+                                  handleUpdateDraftItem(item.id, {
+                                    selectedColor: e.target.value,
+                                  })
+                                }
+                                className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs bg-white focus:ring-2 focus:ring-gold-500 outline-none"
+                              >
+                                {selectedFrameObj.colors.map((c) => (
+                                  <option key={c} value={c}>
+                                    {c}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              <input
+                                type="text"
+                                value={item.selectedColor}
+                                onChange={(e) =>
+                                  handleUpdateDraftItem(item.id, {
+                                    selectedColor: e.target.value,
+                                  })
+                                }
+                                placeholder="Preto Clássico"
+                                className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-gold-500 outline-none"
+                              />
+                            )}
+                          </div>
+
+                          <div>
+                            <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                              Marca
+                            </label>
+                            <input
+                              type="text"
+                              value={item.frameBrand}
+                              onChange={(e) =>
+                                handleUpdateDraftItem(item.id, { frameBrand: e.target.value })
+                              }
+                              placeholder="Ótica Rapido"
+                              className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-gold-500 outline-none"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                              Valor Armação (R$)
+                            </label>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={item.framePrice}
+                              onChange={(e) =>
+                                handleUpdateDraftItem(item.id, { framePrice: e.target.value })
+                              }
+                              className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono tabular-nums focus:ring-2 focus:ring-gold-500 outline-none"
+                            />
+                          </div>
+                        </div>
+                      </>
+                    )}
 
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                      <div>
-                        <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                          Cor / Acabamento
-                        </label>
-                        {selectedFrameObj && selectedFrameObj.colors.length > 0 ? (
-                          <select
-                            value={item.selectedColor}
-                            onChange={(e) =>
-                              handleUpdateDraftItem(item.id, { selectedColor: e.target.value })
-                            }
-                            className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs bg-white focus:ring-2 focus:ring-gold-500 outline-none"
-                          >
-                            {selectedFrameObj.colors.map((c) => (
-                              <option key={c} value={c}>
-                                {c}
-                              </option>
-                            ))}
-                          </select>
-                        ) : (
-                          <input
-                            type="text"
-                            value={item.selectedColor}
-                            onChange={(e) =>
-                              handleUpdateDraftItem(item.id, { selectedColor: e.target.value })
-                            }
-                            placeholder="Preto Clássico"
-                            className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-gold-500 outline-none"
-                          />
-                        )}
-                      </div>
-
-                      <div>
-                        <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                          Marca
-                        </label>
-                        <input
-                          type="text"
-                          value={item.frameBrand}
-                          onChange={(e) =>
-                            handleUpdateDraftItem(item.id, { frameBrand: e.target.value })
-                          }
-                          placeholder="Ótica Rapido"
-                          className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-gold-500 outline-none"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                          Valor Armação (R$)
-                        </label>
-                        <input
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          value={item.framePrice}
-                          onChange={(e) =>
-                            handleUpdateDraftItem(item.id, { framePrice: e.target.value })
-                          }
-                          className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono tabular-nums focus:ring-2 focus:ring-gold-500 outline-none"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-slate-200/70">
                       <div>
                         <label className="block text-[11px] font-semibold text-slate-600 mb-1">
                           Tipo de Lente
@@ -837,7 +1025,7 @@ export default function AdminCustomerQuotes({
                           <option value="nenhum">Sem tratamento adicional</option>
                           {LENS_TREATMENTS.map((t) => (
                             <option key={t.id} value={t.id}>
-                              {t.name} (+{formatBRL(t.suggestedPriceAddon)})
+                              {t.name} ({formatBRL(t.suggestedPriceAddon)})
                             </option>
                           ))}
                         </select>
@@ -865,7 +1053,7 @@ export default function AdminCustomerQuotes({
             </div>
           </div>
 
-          {/* 3. CONDIÇÕES COMERCIAIS E FECHAMENTO */}
+          {/* BLOCO 3: CONDIÇÕES COMERCIAIS E FECHAMENTO */}
           <div className="space-y-4 pt-4 border-t border-slate-100">
             <h4 className="text-xs font-bold text-slate-900">
               3. Condições Comerciais e Validade
@@ -873,9 +1061,21 @@ export default function AdminCustomerQuotes({
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                  Desconto (R$)
-                </label>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-bold text-slate-700">Desconto (R$)</label>
+                  <div className="flex items-center gap-1">
+                    {[0, 50, 100].map((preset) => (
+                      <button
+                        key={preset}
+                        type="button"
+                        onClick={() => setDiscount(String(preset))}
+                        className="px-1.5 py-0.5 text-[10px] font-mono bg-slate-100 hover:bg-slate-200 text-slate-600 rounded cursor-pointer"
+                      >
+                        {preset === 0 ? '0' : `-${preset}`}
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 <input
                   type="number"
                   min="0"
@@ -899,9 +1099,7 @@ export default function AdminCustomerQuotes({
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                  Status Inicial
-                </label>
+                <label className="block text-xs font-bold text-slate-700 mb-1.5">Status</label>
                 <select
                   value={status}
                   onChange={(e) => setStatus(e.target.value as QuoteStatus)}
@@ -959,13 +1157,26 @@ export default function AdminCustomerQuotes({
             </div>
           </div>
 
-          {/* RESUMO FINANCEIRO */}
+          {/* RESUMO FINANCEIRO EM TEMPO REAL */}
           <div className="bg-slate-950 text-white rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div className="space-y-1 text-xs">
-              <div className="flex items-center gap-3 text-slate-400">
-                <span>Subtotal: <strong className="font-mono tabular-nums text-slate-200">{formatBRL(subtotal)}</strong></span>
+              <p className="text-[11px] font-semibold text-gold-400">
+                {getQuoteModalityLabel(includeFrame)}
+              </p>
+              <div className="flex flex-wrap items-center gap-2.5 text-slate-400">
+                <span>
+                  Subtotal:{' '}
+                  <strong className="font-mono tabular-nums text-slate-200">
+                    {formatBRL(subtotal)}
+                  </strong>
+                </span>
                 <span aria-hidden="true">·</span>
-                <span>Desconto: <strong className="font-mono tabular-nums text-emerald-400">- {formatBRL(numericDiscount)}</strong></span>
+                <span>
+                  Desconto:{' '}
+                  <strong className="font-mono tabular-nums text-emerald-400">
+                    - {formatBRL(numericDiscount)}
+                  </strong>
+                </span>
               </div>
               <p className="text-[11px] text-slate-400">{paymentMethod}</p>
             </div>
@@ -977,12 +1188,12 @@ export default function AdminCustomerQuotes({
             </div>
           </div>
 
-          {/* AÇÕES PRINCIPAIS */}
-          <div className="flex flex-col sm:flex-row gap-3">
+          {/* AÇÕES RÁPIDAS DO ADMIN */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
             <button
               type="submit"
               disabled={isSaving}
-              className="flex-1 py-3.5 px-5 bg-sapphire-950 hover:bg-sapphire-900 disabled:opacity-60 text-gold-400 font-display font-bold text-sm rounded-xl shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
+              className="py-3 px-4 bg-sapphire-950 hover:bg-sapphire-900 disabled:opacity-60 text-gold-400 font-display font-bold text-xs rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
             >
               {isSaving ? (
                 <>
@@ -1000,28 +1211,38 @@ export default function AdminCustomerQuotes({
             <button
               type="button"
               disabled={isSaving}
-              onClick={handleSaveAndOpenPayment}
-              className="py-3.5 px-5 bg-gold-500 hover:bg-gold-400 disabled:opacity-60 text-slate-950 font-display font-bold text-xs rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
+              onClick={handleSaveAndOpenProposal}
+              className="py-3 px-4 bg-gold-500 hover:bg-gold-400 disabled:opacity-60 text-slate-950 font-display font-bold text-xs rounded-xl shadow-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
             >
-              <ExternalLink className="h-4 w-4" />
-              Salvar e Gerar Pix / PDF
+              <Download className="h-4 w-4" />
+              Salvar e Baixar PDF
             </button>
+
+            <a
+              href={buildQuoteWhatsAppUrl(liveQuoteObject)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="py-3 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-display font-bold text-xs rounded-xl shadow-xs transition-all flex items-center justify-center gap-1.5 whitespace-nowrap"
+            >
+              <MessageSquare className="h-4 w-4" />
+              Enviar WhatsApp
+            </a>
           </div>
         </form>
 
-        {/* LISTA DE ORÇAMENTOS DE CLIENTES (5 COLS) */}
-        <div className="lg:col-span-5 bg-white border border-slate-200/90 rounded-3xl p-6 shadow-sm flex flex-col space-y-4">
+        {/* LISTA DE ORÇAMENTOS SALVOS (5 COLS) */}
+        <div className="lg:col-span-5 bg-white border border-slate-200/90 rounded-3xl p-6 shadow-xs flex flex-col space-y-4">
           <div className="border-b border-slate-100 pb-4">
             <div className="flex items-center justify-between gap-2">
               <h3 className="font-display font-black text-base text-slate-900">
-                Orçamentos Emitidos ({quotes.length})
+                Orçamentos Salvos ({quotes.length})
               </h3>
               <span className="font-mono tabular-nums text-xs font-bold text-slate-700">
                 {formatBRL(totalPipelineValue)}
               </span>
             </div>
             <p className="text-[11px] text-slate-500 mt-0.5">
-              Histórico em tempo real para envio no WhatsApp, cobrança Pix ou edição
+              Reabra para editar, exportar PDF ou enviar o resumo no WhatsApp
             </p>
           </div>
 
@@ -1073,15 +1294,10 @@ export default function AdminCustomerQuotes({
           ) : filteredQuotes.length === 0 ? (
             <div className="py-12 px-4 text-center bg-slate-50 border border-dashed border-slate-200 rounded-2xl">
               <FileText className="h-8 w-8 text-slate-300 mx-auto mb-2" />
-              <p className="text-xs font-bold text-slate-700">
-                {quotes.length === 0
-                  ? 'Nenhum orçamento criado no painel ainda'
-                  : 'Nenhum orçamento encontrado para este filtro'}
-              </p>
+              <p className="text-xs font-bold text-slate-700">Nenhum orçamento encontrado</p>
               <p className="text-[11px] text-slate-500 mt-1">
-                {quotes.length === 0
-                  ? 'Preencha o formulário ao lado para criar o primeiro orçamento de cliente.'
-                  : 'Limpe a busca ou altere o filtro de status acima.'}
+                Preencha o formulário ao lado e clique em &ldquo;Salvar Orçamento&rdquo; para
+                registrar o primeiro atendimento.
               </p>
             </div>
           ) : (
@@ -1089,43 +1305,45 @@ export default function AdminCustomerQuotes({
               {filteredQuotes.map((q) => {
                 const currentStatus: QuoteStatus = q.status || 'rascunho';
                 const statusInfo = STATUS_META[currentStatus];
-                const isEditingThis = editingQuoteId === q.id;
+                const qWithFrame = isQuoteWithFrame(q);
+                const qRx = getEffectivePrescription(q);
+
                 return (
                   <div
                     key={q.id}
-                    className={`p-4 rounded-2xl border transition-colors space-y-3 ${
-                      isEditingThis
+                    className={`p-4 rounded-2xl border transition-colors space-y-2.5 ${
+                      editingQuoteId === q.id
                         ? 'bg-amber-50/40 border-gold-400'
-                        : 'bg-slate-50/70 border-slate-200/80 hover:border-slate-300'
+                        : 'bg-slate-50/80 border-slate-200/80 hover:border-slate-300'
                     }`}
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
-                        <div className="flex items-center gap-1.5 text-[11px] text-slate-500 font-mono">
+                        <div className="flex items-center gap-2 text-[10px] font-mono text-slate-500">
                           <span className="font-bold text-slate-800">{q.quoteNumber}</span>
                           <span aria-hidden="true">·</span>
-                          <span>{q.date.split('-').reverse().join('/')}</span>
+                          <span>{qWithFrame ? 'Com Armação' : 'Somente Lentes'}</span>
                         </div>
                         <h4 className="font-display font-bold text-sm text-slate-900 truncate mt-0.5">
                           {q.customerName}
                         </h4>
                         <p className="text-[11px] text-slate-500 truncate">
                           {q.customerPhone}
-                          {q.customerEmail ? ` · ${q.customerEmail}` : ''}
+                          {q.validUntil ? ` · Válido até ${formatDateBR(q.validUntil)}` : ''}
                         </p>
                       </div>
 
-                      <div className="text-right shrink-0">
-                        <span className="block font-mono tabular-nums font-bold text-sm text-slate-950">
+                      <div className="text-right flex-shrink-0">
+                        <span className="font-mono tabular-nums text-sm font-bold text-slate-950 block">
                           {formatBRL(q.total)}
                         </span>
                         <select
-                          aria-label={`Status do orçamento ${q.quoteNumber}`}
                           value={currentStatus}
                           onChange={(e) =>
                             handleChangeQuoteStatus(q.id, e.target.value as QuoteStatus)
                           }
-                          className={`mt-1 px-2 py-0.5 text-[10px] font-bold rounded-md border outline-none cursor-pointer ${statusInfo.selectClass}`}
+                          aria-label={`Status do orçamento ${q.quoteNumber}`}
+                          className={`mt-1 text-[10px] font-bold px-2 py-0.5 rounded-md border outline-none cursor-pointer ${statusInfo.selectClass}`}
                         >
                           <option value="rascunho">Rascunho</option>
                           <option value="enviado">Enviado</option>
@@ -1135,38 +1353,28 @@ export default function AdminCustomerQuotes({
                       </div>
                     </div>
 
-                    {q.items.length > 0 && (
-                      <div className="text-[11px] text-slate-600 border-t border-slate-200/60 pt-2 space-y-0.5">
-                        {q.items.map((it, i) => (
-                          <p key={i} className="truncate">
-                            <span className="font-semibold text-slate-800">{it.frame.name}</span>
-                            <span className="text-slate-400"> · </span>
-                            <span>{it.lensType}</span>
-                          </p>
-                        ))}
-                      </div>
+                    {qRx && (
+                      <p className="font-mono tabular-nums text-[10px] text-slate-500 bg-white border border-slate-200/70 rounded-lg px-2.5 py-1">
+                        OD {qRx.od.spherical || '0.00'}/{qRx.od.cylindrical || '0.00'} ({qRx.od.axis || '0'}°) · OE {qRx.oe.spherical || '0.00'}/{qRx.oe.cylindrical || '0.00'} ({qRx.oe.axis || '0'}°)
+                      </p>
                     )}
 
-                    <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                    {/* Ações do card */}
+                    <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-slate-200/70">
                       <button
                         type="button"
                         onClick={() => onOpenQuoteInManager(q)}
-                        className="flex-1 px-2.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-[11px] font-semibold flex items-center justify-center gap-1 transition-colors cursor-pointer whitespace-nowrap"
+                        className="px-2.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-gold-400 rounded-lg text-[11px] font-bold flex items-center gap-1 transition-colors cursor-pointer"
                       >
-                        <ExternalLink className="h-3 w-3" />
-                        Pix / PDF
+                        <Download className="h-3 w-3" />
+                        PDF / Pix
                       </button>
 
                       <a
-                        href={buildWhatsAppUrl(q)}
+                        href={buildQuoteWhatsAppUrl(q)}
                         target="_blank"
                         rel="noopener noreferrer"
-                        onClick={() => {
-                          if (currentStatus === 'rascunho') {
-                            void handleChangeQuoteStatus(q.id, 'enviado');
-                          }
-                        }}
-                        className="flex-1 px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-[11px] font-semibold flex items-center justify-center gap-1 transition-colors whitespace-nowrap"
+                        className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-[11px] font-bold flex items-center gap-1 transition-colors"
                       >
                         <MessageSquare className="h-3 w-3" />
                         WhatsApp
@@ -1174,18 +1382,31 @@ export default function AdminCustomerQuotes({
 
                       <button
                         type="button"
-                        onClick={() => handleEditQuote(q)}
-                        title="Editar orçamento"
-                        className="p-1.5 text-slate-600 hover:text-slate-950 hover:bg-slate-200/70 rounded-lg transition-colors cursor-pointer"
+                        onClick={() => handleCopyQuoteSummary(q)}
+                        className="px-2 py-1.5 bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 rounded-lg text-[11px] font-semibold flex items-center gap-1 transition-colors cursor-pointer"
+                        title="Copiar resumo do orçamento"
                       >
-                        <Edit3 className="h-3.5 w-3.5" />
+                        {copiedQuoteId === q.id ? (
+                          <Check className="h-3 w-3 text-emerald-600" />
+                        ) : (
+                          <Copy className="h-3 w-3" />
+                        )}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleEditQuote(q)}
+                        className="px-2 py-1.5 bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 rounded-lg text-[11px] font-semibold flex items-center gap-1 transition-colors cursor-pointer"
+                        title="Editar orçamento"
+                      >
+                        <Edit3 className="h-3 w-3" />
                       </button>
 
                       <button
                         type="button"
                         onClick={() => handleDeleteQuote(q.id)}
+                        className="ml-auto p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
                         title="Excluir orçamento"
-                        className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>

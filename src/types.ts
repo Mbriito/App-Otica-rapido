@@ -85,6 +85,12 @@ export interface SelectedItem {
 
 export type QuoteStatus = 'rascunho' | 'enviado' | 'aprovado' | 'cancelado';
 
+export interface SavedPrescriptionRecord extends MedicalPrescription {
+  id: string;
+  customerId?: string;
+  createdAt: string;
+}
+
 export interface OpticalQuote {
   id: string;
   quoteNumber: string;
@@ -95,6 +101,8 @@ export interface OpticalQuote {
   customerPhone: string;
   customerEmail: string;
   customerCpf: string;
+  includeFrame?: boolean;
+  prescription?: MedicalPrescription;
   items: SelectedItem[];
   subtotal: number;
   discount: number;

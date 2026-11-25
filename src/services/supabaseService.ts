@@ -6,7 +6,9 @@ import {
   MedicalPrescription,
   OpticalQuote,
   QuoteStatus,
+  SavedPrescriptionRecord,
 } from '../types';
+import { calculateQuoteTotals } from '../utils/quoteUtils';
 
 const STORAGE_KEYS = {
   CUSTOM_FRAMES: 'otica_rapido_custom_frames_v1',
@@ -20,6 +22,12 @@ const STORAGE_KEYS = {
 
 const FRAMES_UPDATED_EVENT = 'otica-frames-updated';
 const QUOTES_UPDATED_EVENT = 'otica-quotes-updated';
+const PRESCRIPTIONS_UPDATED_EVENT = 'otica-prescriptions-updated';
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+function isUuid(value?: string): boolean {
+  return Boolean(value && UUID_REGEX.test(value));
+}
 
 function readJsonStorage<T>(key: string, fallback: T): T {
   try {
@@ -483,14 +491,14 @@ export async function savePrescriptionRecord(params: {
     }
   }
 
-  const recordId = generateUuid();
+  let finalId = generateUuid();
 
   if (supabase) {
     try {
       const { data, error } = await supabase
         .from('prescriptions')
         .insert({
-          customer_id: params.customer?.id || null,
+          customer_id: isUuid(params.customer?.id) ? params.customer?.id : null,
           customer_identifier: params.customer?.identifier || null,
           patient_name: params.prescription.patientName,
           doctor_name: params.prescription.doctorName || '',
@@ -509,28 +517,81 @@ export async function savePrescriptionRecord(params: {
         .single();
 
       if (!error && data?.id) {
-        return { id: data.id };
+        finalId = data.id;
       }
     } catch {
       // Fallback local
     }
   }
 
-  const existing = readJsonStorage<Array<MedicalPrescription & { id: string; customerId?: string; createdAt: string }>>(
-    STORAGE_KEYS.PRESCRIPTIONS,
-    []
-  );
+  const existing = readJsonStorage<SavedPrescriptionRecord[]>(STORAGE_KEYS.PRESCRIPTIONS, []);
+  const savedRecord: SavedPrescriptionRecord = {
+    ...params.prescription,
+    id: finalId,
+    customerId: params.customer?.id,
+    createdAt: new Date().toISOString(),
+  };
   writeJsonStorage(STORAGE_KEYS.PRESCRIPTIONS, [
-    {
-      ...params.prescription,
-      id: recordId,
-      customerId: params.customer?.id,
-      createdAt: new Date().toISOString(),
-    },
-    ...existing,
+    savedRecord,
+    ...existing.filter((p) => p.id !== finalId),
   ]);
+  window.dispatchEvent(new CustomEvent(PRESCRIPTIONS_UPDATED_EVENT));
 
-  return { id: recordId };
+  return { id: finalId };
+}
+
+export async function fetchPrescriptions(): Promise<SavedPrescriptionRecord[]> {
+  const local = readJsonStorage<SavedPrescriptionRecord[]>(STORAGE_KEYS.PRESCRIPTIONS, []);
+
+  if (!supabase) {
+    return local;
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('prescriptions')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(30);
+
+    if (error || !data) {
+      return local;
+    }
+
+    const mapped: SavedPrescriptionRecord[] = data.map((row: any) => ({
+      id: row.id,
+      customerId: row.customer_id || undefined,
+      patientName: row.patient_name || '',
+      doctorName: row.doctor_name || '',
+      doctorCrm: row.doctor_crm || '',
+      date: row.exam_date || new Date().toISOString().split('T')[0],
+      od: row.od || { spherical: '0.00', cylindrical: '0.00', axis: '0', dnp: '' },
+      oe: row.oe || { spherical: '0.00', cylindrical: '0.00', axis: '0', dnp: '' },
+      observation: row.observation || '',
+      createdAt: row.created_at || new Date().toISOString(),
+    }));
+
+    // Preserve local entries that might not be in remote (e.g., saved before login or offline)
+    const remoteIds = new Set(mapped.map((r) => r.id));
+    const merged = [...mapped, ...local.filter((l) => !remoteIds.has(l.id))].slice(0, 40);
+    writeJsonStorage(STORAGE_KEYS.PRESCRIPTIONS, merged);
+    return merged;
+  } catch {
+    return local;
+  }
+}
+
+export function subscribeToPrescriptions(
+  onUpdate: (records: SavedPrescriptionRecord[]) => void
+): () => void {
+  const handleChange = async () => {
+    const records = await fetchPrescriptions();
+    onUpdate(records);
+  };
+  window.addEventListener(PRESCRIPTIONS_UPDATED_EVENT, handleChange);
+  return () => {
+    window.removeEventListener(PRESCRIPTIONS_UPDATED_EVENT, handleChange);
+  };
 }
 
 // ============================================================================
@@ -712,6 +773,8 @@ interface SupabaseQuoteRow {
   customer_phone: string;
   customer_email: string | null;
   customer_cpf: string | null;
+  include_frame?: boolean | null;
+  prescription?: MedicalPrescription | null;
   items: OpticalQuote['items'];
   subtotal: number;
   discount: number;
@@ -727,6 +790,16 @@ interface SupabaseQuoteRow {
 }
 
 function mapRowToQuote(row: SupabaseQuoteRow): OpticalQuote {
+  const items = Array.isArray(row.items) ? row.items : [];
+  const inferredIncludeFrame =
+    typeof row.include_frame === 'boolean'
+      ? row.include_frame
+      : items.length > 0
+        ? items.some((it) => it.frame?.id !== 'no-frame')
+        : true;
+  const inferredPrescription =
+    row.prescription || items.find((it) => it.prescription)?.prescription || undefined;
+
   return {
     id: row.id,
     quoteNumber: row.quote_number,
@@ -735,7 +808,9 @@ function mapRowToQuote(row: SupabaseQuoteRow): OpticalQuote {
     customerPhone: row.customer_phone,
     customerEmail: row.customer_email || '',
     customerCpf: row.customer_cpf || '',
-    items: Array.isArray(row.items) ? row.items : [],
+    includeFrame: inferredIncludeFrame,
+    prescription: inferredPrescription,
+    items,
     subtotal: Number(row.subtotal) || 0,
     discount: Number(row.discount) || 0,
     total: Number(row.total) || 0,
@@ -808,9 +883,13 @@ export async function fetchQuotes(): Promise<OpticalQuote[]> {
       return localQuotes;
     }
 
-    const mapped = (data as SupabaseQuoteRow[]).map(mapRowToQuote);
-    writeJsonStorage(STORAGE_KEYS.QUOTES, mapped);
-    return mapped;
+    const remoteMapped = (data as SupabaseQuoteRow[]).map(mapRowToQuote);
+    // Merge with any locally drafted quotes not yet synced to remote
+    const remoteKeys = new Set(remoteMapped.map((q) => q.quoteNumber));
+    const localOnly = localQuotes.filter((q) => !remoteKeys.has(q.quoteNumber));
+    const merged = [...remoteMapped, ...localOnly];
+    writeJsonStorage(STORAGE_KEYS.QUOTES, merged);
+    return merged;
   } catch {
     return localQuotes;
   }
@@ -824,73 +903,128 @@ export async function saveQuoteRecord(
     payload.quoteNumber?.trim() ||
     `OR-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
 
+  const includeFrame = payload.includeFrame !== false;
+  const normalizedItems = payload.items.map((item, idx) => ({
+    ...item,
+    frame: includeFrame
+      ? {
+          ...item.frame,
+          price: Math.max(0, Number(item.frame?.price) || 0),
+        }
+      : {
+          ...item.frame,
+          id: 'no-frame',
+          name: 'Armação Própria do Cliente',
+          brand: 'Somente Lentes',
+          price: 0,
+        },
+    selectedColor: includeFrame ? item.selectedColor || 'Preto Clássico' : 'Armação Própria',
+    lensPrice: Math.max(0, Number(item.lensPrice) || 0),
+    prescription: idx === 0 ? payload.prescription || item.prescription : item.prescription,
+  }));
+
+  const totals = calculateQuoteTotals(normalizedItems, payload.discount, includeFrame);
   const existingLocal = readJsonStorage<OpticalQuote[]>(STORAGE_KEYS.QUOTES, []);
-  const isUpdate = Boolean(payload.id && existingLocal.some((q) => q.id === payload.id));
+  const existingRecord = existingLocal.find(
+    (q) => (payload.id && q.id === payload.id) || q.quoteNumber === quoteNumber
+  );
 
   const localQuote: OpticalQuote = {
     ...payload,
-    id: payload.id || generateUuid(),
+    id: isUuid(payload.id) ? payload.id! : existingRecord?.id || generateUuid(),
     quoteNumber,
-    customerName: payload.customerName.trim(),
-    customerPhone: payload.customerPhone.trim(),
+    customerId: isUuid(payload.customerId) ? payload.customerId : undefined,
+    customerName: payload.customerName.trim() || 'Cliente sem nome',
+    customerPhone: payload.customerPhone.trim() || '',
     customerEmail: payload.customerEmail?.trim() || '',
     customerCpf: payload.customerCpf?.trim() || '',
-    subtotal: Number(payload.subtotal) || 0,
-    discount: Number(payload.discount) || 0,
-    total: Number(payload.total) || 0,
+    includeFrame,
+    prescription: payload.prescription || normalizedItems.find((i) => i.prescription)?.prescription,
+    items: normalizedItems,
+    subtotal: totals.subtotal,
+    discount: totals.discount,
+    total: totals.total,
+    paymentMethod: payload.paymentMethod || 'Pix à vista',
+    observations: payload.observations?.trim() || '',
+    sellerName: payload.sellerName?.trim() || 'Administrador - Ótica Rapido',
+    date: payload.date || new Date().toISOString().split('T')[0],
+    validUntil:
+      payload.validUntil || new Date(Date.now() + 15 * 86400000).toISOString().split('T')[0],
     status: payload.status || 'rascunho',
     createdBy: payload.createdBy || 'admin',
-    createdAt: nowIso,
+    createdAt: existingRecord?.createdAt || nowIso,
   };
 
   let savedQuote = localQuote;
 
   if (supabase) {
-    try {
-      const dbRow = {
-        quote_number: localQuote.quoteNumber,
-        customer_id: localQuote.customerId || null,
-        customer_name: localQuote.customerName,
-        customer_phone: localQuote.customerPhone,
-        customer_email: localQuote.customerEmail,
-        customer_cpf: localQuote.customerCpf,
-        items: localQuote.items,
-        subtotal: localQuote.subtotal,
-        discount: localQuote.discount,
-        total: localQuote.total,
-        payment_method: localQuote.paymentMethod,
-        observations: localQuote.observations,
-        seller_name: localQuote.sellerName,
-        quote_date: localQuote.date,
-        valid_until: localQuote.validUntil,
-        status: localQuote.status || 'rascunho',
-        created_by: localQuote.createdBy || 'admin',
-      };
+    const baseDbRow = {
+      quote_number: localQuote.quoteNumber,
+      customer_id: isUuid(localQuote.customerId) ? localQuote.customerId : null,
+      customer_name: localQuote.customerName,
+      customer_phone: localQuote.customerPhone,
+      customer_email: localQuote.customerEmail,
+      customer_cpf: localQuote.customerCpf,
+      items: localQuote.items,
+      subtotal: localQuote.subtotal,
+      discount: localQuote.discount,
+      total: localQuote.total,
+      payment_method: localQuote.paymentMethod,
+      observations: localQuote.observations,
+      seller_name: localQuote.sellerName,
+      quote_date: localQuote.date,
+      valid_until: localQuote.validUntil,
+      status: localQuote.status || 'rascunho',
+      created_by: localQuote.createdBy || 'admin',
+    };
 
-      const response = isUpdate
-        ? await supabase
-            .from('quotes')
-            .update(dbRow)
-            .eq('id', localQuote.id)
-            .select()
-            .single()
-        : await supabase
-            .from('quotes')
-            .upsert(dbRow, { onConflict: 'quote_number' })
-            .select()
-            .single();
+    const fullDbRow = {
+      ...baseDbRow,
+      include_frame: localQuote.includeFrame,
+      prescription: localQuote.prescription || null,
+    };
+
+    const writeRemote = async (rowPayload: Record<string, unknown>) => {
+      if (isUuid(payload.id) && existingRecord && isUuid(existingRecord.id)) {
+        return supabase!
+          .from('quotes')
+          .update(rowPayload)
+          .eq('id', localQuote.id)
+          .select()
+          .single();
+      }
+      return supabase!
+        .from('quotes')
+        .upsert(rowPayload, { onConflict: 'quote_number' })
+        .select()
+        .single();
+    };
+
+    try {
+      let response = await writeRemote(fullDbRow);
+      // Graceful fallback if remote Supabase table hasn't added include_frame/prescription columns yet
+      if (response.error && /column|schema cache|42703|PGRST204/i.test(response.error.message || '')) {
+        response = await writeRemote(baseDbRow);
+      }
 
       if (!response.error && response.data) {
-        savedQuote = mapRowToQuote(response.data as SupabaseQuoteRow);
+        const mapped = mapRowToQuote(response.data as SupabaseQuoteRow);
+        savedQuote = {
+          ...mapped,
+          includeFrame: localQuote.includeFrame,
+          prescription: localQuote.prescription || mapped.prescription,
+        };
       }
     } catch {
-      // Mantém persistência local
+      // Mantém persistência local segura
     }
   }
 
   const updatedList = [
     savedQuote,
-    ...existingLocal.filter((q) => q.id !== savedQuote.id && q.quoteNumber !== savedQuote.quoteNumber),
+    ...existingLocal.filter(
+      (q) => q.id !== savedQuote.id && q.quoteNumber !== savedQuote.quoteNumber
+    ),
   ];
   writeJsonStorage(STORAGE_KEYS.QUOTES, updatedList);
   window.dispatchEvent(new CustomEvent(QUOTES_UPDATED_EVENT));
@@ -899,7 +1033,7 @@ export async function saveQuoteRecord(
 }
 
 export async function updateQuoteStatus(quoteId: string, status: QuoteStatus): Promise<void> {
-  if (supabase) {
+  if (supabase && isUuid(quoteId)) {
     try {
       await supabase.from('quotes').update({ status }).eq('id', quoteId);
     } catch {
@@ -914,7 +1048,7 @@ export async function updateQuoteStatus(quoteId: string, status: QuoteStatus): P
 }
 
 export async function deleteQuoteRecord(quoteId: string): Promise<void> {
-  if (supabase) {
+  if (supabase && isUuid(quoteId)) {
     try {
       await supabase.from('quotes').delete().eq('id', quoteId);
     } catch {

@@ -64,11 +64,20 @@ export default function App() {
   );
   const [loadedAdminQuote, setLoadedAdminQuote] = useState<OpticalQuote | undefined>(undefined);
 
-  // Sync URL path when navigating (supports /admin directly)
+  // Sync URL path when navigating across all sections
   const navigateToSection = (section: string) => {
     setActiveSection(section);
     if (typeof window !== 'undefined') {
-      const targetPath = section === 'admin' ? '/admin' : '/';
+      const routeMap: Record<string, string> = {
+        home: '/',
+        catalog: '/catalogo',
+        prescription: '/receita',
+        appointments: '/agendamento',
+        quotes: '/orcamentos',
+        lgpd: '/lgpd',
+        admin: '/admin',
+      };
+      const targetPath = routeMap[section] || '/';
       if (window.location.pathname !== targetPath) {
         window.history.pushState({ section }, '', targetPath);
       }
@@ -120,7 +129,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans transition-all selection:bg-gold-200">
       {mapsQuotaExceeded && (
-        <div className="bg-amber-50 border-b border-amber-200 text-amber-900 px-4 py-2.5 text-xs md:text-sm text-center sticky top-0 z-50 shadow-sm">
+        <div className="bg-amber-50 border-b border-amber-200 text-amber-900 px-4 py-2.5 text-xs md:text-sm text-center sticky top-0 z-50 shadow-sm print:hidden">
           <span>
             Google Maps Platform quota reached. If you are the app owner, visit{' '}
             <a
@@ -146,7 +155,7 @@ export default function App() {
       />
 
       {/* Main Content Area */}
-      <main className="flex-grow max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 w-full">
+      <main className="flex-grow max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 w-full print:max-w-none print:p-0">
         {activeSection === 'home' && <HomePresentation onNavigate={navigateToSection} />}
 
         {activeSection === 'catalog' && (
@@ -182,6 +191,7 @@ export default function App() {
             linkedPrescription={linkedPrescription}
             customerSession={customerSession}
             initialQuote={loadedAdminQuote}
+            onNavigateToPrescription={() => navigateToSection('prescription')}
           />
         )}
 

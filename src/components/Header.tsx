@@ -3,9 +3,7 @@ import {
   Glasses,
   Receipt,
   FileText,
-  MessageSquare,
   Home,
-  ShieldCheck,
   Calendar,
   UserCheck,
   LogOut,
@@ -34,7 +32,6 @@ export default function Header({
     { id: 'prescription', label: 'Receita', mobileLabel: 'Receita', icon: FileText },
     { id: 'appointments', label: 'Visita em Casa', mobileLabel: 'Visita', icon: Calendar },
     { id: 'quotes', label: 'Orçamentos', mobileLabel: 'Orçamentos', icon: Receipt },
-    { id: 'lgpd', label: 'LGPD', mobileLabel: 'LGPD', icon: ShieldCheck },
   ];
 
   const customerLabel = customerSession
@@ -49,8 +46,9 @@ export default function Header({
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-20 gap-3">
           {/* Logo Brand */}
-          <div
-            className="flex items-center gap-2.5 cursor-pointer flex-shrink-0"
+          <button
+            type="button"
+            className="flex items-center gap-2.5 cursor-pointer flex-shrink-0 text-left"
             onClick={() => setActiveSection('home')}
           >
             <Glasses className="h-8 w-8 text-gold-400" />
@@ -59,13 +57,13 @@ export default function Header({
                 ÓTICA <span className="text-gold-400 font-light">RAPIDO</span>
               </h1>
               <p className="font-mono text-[9px] uppercase tracking-widest text-gold-500 mt-1 hidden sm:block">
-                Ótica Online & a Domicílio
+                Ótica Online &amp; a Domicílio
               </p>
             </div>
-          </div>
+          </button>
 
           {/* Navigation Links (Desktop) */}
-          <nav className="hidden lg:flex items-center space-x-1">
+          <nav className="hidden lg:flex items-center space-x-1" aria-label="Navegação principal">
             {navItems.map((item) => {
               const Icon = item.icon;
               const isActive = activeSection === item.id;
@@ -74,7 +72,7 @@ export default function Header({
                   key={item.id}
                   type="button"
                   onClick={() => setActiveSection(item.id)}
-                  className={`flex items-center gap-1.5 px-3 py-2 rounded-lg font-sans text-xs font-medium transition-all duration-200 cursor-pointer whitespace-nowrap ${
+                  className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg font-sans text-xs font-medium transition-all duration-200 cursor-pointer whitespace-nowrap ${
                     isActive
                       ? 'bg-gold-500 text-slate-950 shadow-md font-bold'
                       : 'text-slate-300 hover:text-white hover:bg-slate-900'
@@ -87,12 +85,12 @@ export default function Header({
             })}
           </nav>
 
-          {/* Right Actions: Customer Identification + Admin + WhatsApp */}
+          {/* Right Actions: Customer Identification + Admin */}
           <div className="flex items-center gap-2 flex-shrink-0">
             {customerSession ? (
               <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1.5">
                 <UserCheck className="h-3.5 w-3.5 text-gold-400 flex-shrink-0" />
-                <span className="text-xs font-semibold text-white max-w-[96px] truncate">
+                <span className="text-xs font-semibold text-white max-w-[110px] truncate">
                   {customerLabel}
                 </span>
                 <button
@@ -108,7 +106,7 @@ export default function Header({
               <button
                 type="button"
                 onClick={onOpenLogin}
-                className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-gold-400 rounded-xl px-3 py-1.5 text-xs font-bold transition-all cursor-pointer"
+                className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-gold-400 rounded-xl px-3 py-1.5 text-xs font-bold transition-all cursor-pointer whitespace-nowrap"
               >
                 <UserCheck className="h-3.5 w-3.5" />
                 <span className="hidden sm:inline">Identificar-se</span>
@@ -119,25 +117,15 @@ export default function Header({
               type="button"
               onClick={() => setActiveSection('admin')}
               title="Painel Administrativo (/admin)"
-              className={`hidden sm:flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
+              className={`hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer whitespace-nowrap ${
                 activeSection === 'admin'
                   ? 'bg-gold-500 text-slate-950 border-gold-500 font-bold'
                   : 'bg-slate-900/70 text-slate-300 border-slate-800 hover:text-white hover:border-slate-700'
               }`}
             >
               <SlidersHorizontal className="h-3.5 w-3.5" />
-              <span className="hidden xl:inline">Admin</span>
+              <span>Admin</span>
             </button>
-
-            <a
-              href="https://wa.me/5511947069414"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl px-3 py-1.5 text-xs font-semibold shadow-md transition-transform hover:scale-105"
-            >
-              <MessageSquare className="h-3.5 w-3.5" />
-              <span className="hidden md:inline">WhatsApp</span>
-            </a>
           </div>
         </div>
       </div>

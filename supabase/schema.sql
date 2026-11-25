@@ -103,6 +103,8 @@ CREATE TABLE IF NOT EXISTS public.quotes (
   customer_phone TEXT NOT NULL,
   customer_email TEXT DEFAULT '',
   customer_cpf TEXT DEFAULT '',
+  include_frame BOOLEAN NOT NULL DEFAULT TRUE,
+  prescription JSONB,
   items JSONB NOT NULL DEFAULT '[]'::jsonb,
   subtotal NUMERIC(10, 2) NOT NULL DEFAULT 0,
   discount NUMERIC(10, 2) NOT NULL DEFAULT 0,
@@ -116,6 +118,9 @@ CREATE TABLE IF NOT EXISTS public.quotes (
   created_by TEXT NOT NULL DEFAULT 'admin' CHECK (created_by IN ('admin', 'cliente')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE public.quotes ADD COLUMN IF NOT EXISTS include_frame BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE public.quotes ADD COLUMN IF NOT EXISTS prescription JSONB;
 
 -- ============================================================================
 -- HABILITAR REALTIME PARA O CATÁLOGO DE ARMAÇÕES E ORÇAMENTOS
