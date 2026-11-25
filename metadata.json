@@ -1,0 +1,6 @@
+{
+  "name": "Ótica Rapido",
+  "description": "Portfólio e central de atendimento para Ótica Rapido, sua óptica online de alta precisão. Possui leitor inteligente de receitas com adição (ADD) para multifocais, catálogo de armações premium, agendamento de consultas a domicílio, além de emissores editáveis de orçamentos e recibos com integração WhatsApp.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

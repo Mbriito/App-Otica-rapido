@@ -1,0 +1,39 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Outfit", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  
+  --color-gold-50: #fbf8f3;
+  --color-gold-100: #f4ecdf;
+  --color-gold-200: #e7d8bc;
+  --color-gold-300: #d5bd91;
+  --color-gold-400: #c19e68;
+  --color-gold-500: #b0854c;
+  --color-gold-600: #9a703f;
+  --color-gold-700: #805a35;
+  --color-gold-800: #68482d;
+  --color-gold-900: #563c27;
+  --color-gold-950: #302014;
+
+  --color-sapphire-50: #f4f6fb;
+  --color-sapphire-100: #e7edf7;
+  --color-sapphire-200: #cbd9ef;
+  --color-sapphire-300: #9fbadf;
+  --color-sapphire-400: #6b93cd;
+  --color-sapphire-500: #4672b9;
+  --color-sapphire-600: #35589b;
+  --color-sapphire-700: #2c477e;
+  --color-sapphire-800: #273d69;
+  --color-sapphire-900: #1c2b45;
+  --color-sapphire-950: #0e1624;
+}
+
+@layer base {
+  body {
+    @apply font-sans bg-slate-50 text-slate-800;
+  }
+}
+
