@@ -1021,7 +1021,7 @@ export async function createHomeVisitAppointment(params: {
         .from('home_visit_appointments')
         .insert({
           protocol: appointment.protocol,
-          customer_id: appointment.customerId || null,
+          customer_id: isUuid(appointment.customerId) ? appointment.customerId : null,
           customer_name: appointment.customerName,
           customer_phone: appointment.customerPhone,
           customer_email: appointment.customerEmail || '',
