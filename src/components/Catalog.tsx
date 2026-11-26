@@ -3,6 +3,8 @@ import { premiumFrames } from '../data/frames';
 import { EyewearFrame } from '../types';
 import { Filter, SlidersHorizontal, Check, ShieldCheck, Sparkles, MessageSquare, ShoppingCart, ArrowRight, Eye, Sun, UserCheck, RefreshCw } from 'lucide-react';
 import FaceShapeGuide from './FaceShapeGuide';
+import OpticalImage from './OpticalImage';
+import catalogEyewearHero from '../assets/images/catalog_eyewear_hero_1795637102870.jpg';
 import { fetchCustomFrames, subscribeToCustomFrames } from '../services/supabaseService';
 
 interface CatalogProps {
@@ -76,7 +78,7 @@ export default function Catalog({ onSelectFrameForQuote, onNavigateToPrescriptio
     const shapeFormatted = frame.shape === 'gatinho' ? 'De Gatinha' : frame.shape.charAt(0).toUpperCase() + frame.shape.slice(1);
     const categoryFormatted = frame.category === 'sol' ? 'Óculos de Sol' : 'Óculos de Grau';
     
-    const text = `Olá, *Ótica Visão*! Gostei deste modelo no catálogo de referências:\n\n` +
+    const text = `Olá, *Ótica Rapido*! Gostei deste modelo no catálogo de referências:\n\n` +
       `🕶️ *Modelo:* ${frame.name} (${frame.referenceCode || 'Ref. Ótica'})\n` +
       `📐 *Formato:* ${shapeFormatted} (${categoryFormatted})\n` +
       `🎨 *Cor Selecionada:* ${color}\n` +
@@ -89,10 +91,13 @@ export default function Catalog({ onSelectFrameForQuote, onNavigateToPrescriptio
     <div className="py-8">
       {/* Visual Welcome Banner */}
       <div className="bg-sapphire-950 rounded-3xl overflow-hidden shadow-2xl relative mb-12 border border-sapphire-900">
-        <div className="absolute inset-0 bg-gradient-to-r from-sapphire-950 via-sapphire-950/85 to-transparent z-10" />
-        <div 
-          className="absolute inset-0 bg-cover bg-center brightness-50 opacity-30 mix-blend-luminosity" 
-          style={{ backgroundImage: `url('https://images.unsplash.com/photo-1574258495973-f010dfbb5371?auto=format&fit=crop&q=80&w=1200')` }}
+        <div className="absolute inset-0 bg-gradient-to-r from-sapphire-950 via-sapphire-950/88 to-sapphire-950/35 z-10" />
+        <OpticalImage
+          src={catalogEyewearHero}
+          alt="Catálogo de armações de grau e óculos solares UV400 da Ótica Rapido"
+          variant="banner"
+          loading="eager"
+          className="absolute inset-0 w-full h-full object-cover object-center opacity-50"
         />
         <div className="relative z-20 px-8 py-12 md:py-20 md:px-16 max-w-3xl text-left">
           <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-gold-400/10 border border-gold-400/30 font-mono text-xs text-gold-400 font-semibold uppercase tracking-wider mb-4">
@@ -293,7 +298,7 @@ export default function Catalog({ onSelectFrameForQuote, onNavigateToPrescriptio
                   className="group bg-white border border-slate-200/90 rounded-2xl overflow-hidden shadow-xs hover:shadow-xl transition-all duration-300 cursor-pointer flex flex-col h-full hover:-translate-y-1 text-left"
                 >
                   {/* Image Section */}
-                  <div className="relative aspect-video bg-slate-100 overflow-hidden">
+                  <div className="relative aspect-[4/3] bg-slate-100 overflow-hidden">
                     {/* Reference Code Badge */}
                     <span className="absolute top-3 left-3 bg-sapphire-950/90 text-gold-400 text-[10px] font-mono tracking-widest uppercase px-2.5 py-1 rounded-md z-10 font-bold border border-sapphire-800">
                       {frame.referenceCode || 'REF'}
@@ -308,11 +313,12 @@ export default function Catalog({ onSelectFrameForQuote, onNavigateToPrescriptio
                       {frame.category === 'sol' ? 'Solar UV400' : 'Armação de Grau'}
                     </span>
 
-                    <img
+                    <OpticalImage
                       src={frame.imageUrl}
-                      alt={frame.name}
-                      referrerPolicy="no-referrer"
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                      alt={`${frame.name} — ${frame.category === 'sol' ? 'Óculos de Sol UV400' : 'Armação de Grau'} (${shapeName})`}
+                      fallbackLabel={frame.referenceCode || 'Ótica Rapido'}
+                      fallbackSublabel={frame.name}
+                      className="w-full h-full object-cover object-center group-hover:scale-105 transition-transform duration-500"
                     />
                   </div>
 
@@ -388,12 +394,15 @@ export default function Catalog({ onSelectFrameForQuote, onNavigateToPrescriptio
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-white rounded-3xl max-w-4xl w-full shadow-2xl border border-slate-100 overflow-hidden flex flex-col md:flex-row animate-in fade-in zoom-in duration-250">
             {/* Image display */}
-            <div className="md:w-1/2 relative bg-slate-100">
-              <img
+            <div className="md:w-1/2 relative bg-slate-100 aspect-[4/3] md:aspect-auto md:min-h-[450px] overflow-hidden">
+              <OpticalImage
                 src={selectedFrame.imageUrl}
                 alt={selectedFrame.name}
-                referrerPolicy="no-referrer"
-                className="w-full h-full object-cover min-h-[300px] md:min-h-[450px]"
+                variant="modal"
+                loading="eager"
+                fallbackLabel={selectedFrame.referenceCode || 'Ótica Rapido'}
+                fallbackSublabel={selectedFrame.name}
+                className="w-full h-full object-cover object-center"
               />
               <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-sapphire-950/90 to-transparent p-6 text-white text-left">
                 <span className="font-mono text-xs text-gold-400 tracking-wider uppercase font-bold">

@@ -1,5 +1,7 @@
 import React from 'react';
-import { ShieldCheck, Eye, Sparkles, Home, ChevronRight, MessageSquare, BadgeCheck, MapPin, Glasses, Truck } from 'lucide-react';
+import { ShieldCheck, Eye, Sparkles, Home, ChevronRight, MessageSquare, BadgeCheck, Glasses, Truck } from 'lucide-react';
+import OpticalImage from './OpticalImage';
+import homeOpticalHero from '../assets/images/home_optical_hero_1795637104120.jpg';
 
 interface HomePresentationProps {
   onNavigate: (section: string) => void;
@@ -11,10 +13,13 @@ export default function HomePresentation({ onNavigate }: HomePresentationProps) 
       {/* 1. HERO - Apresentação Principal */}
       <section className="relative rounded-3xl overflow-hidden bg-sapphire-950 border border-sapphire-900 shadow-2xl">
         {/* Ambient Dark Overlay */}
-        <div className="absolute inset-0 bg-gradient-to-r from-sapphire-950 via-sapphire-950/90 to-transparent z-10" />
-        <div 
-          className="absolute inset-0 bg-cover bg-center opacity-30 mix-blend-luminosity brightness-75" 
-          style={{ backgroundImage: `url('https://images.unsplash.com/photo-1511556532299-8f662fc26c06?auto=format&fit=crop&q=80&w=1200')` }}
+        <div className="absolute inset-0 bg-gradient-to-r from-sapphire-950 via-sapphire-950/90 to-sapphire-950/35 z-10" />
+        <OpticalImage
+          src={homeOpticalHero}
+          alt="Ótica Rapido — Armações de grau e óculos solares em acetato e titânio"
+          variant="banner"
+          loading="eager"
+          className="absolute inset-0 w-full h-full object-cover object-center opacity-50"
         />
         
         <div className="relative z-20 px-6 py-16 md:py-24 md:px-16 max-w-3xl text-left">

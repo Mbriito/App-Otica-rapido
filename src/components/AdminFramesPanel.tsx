@@ -23,6 +23,7 @@ import {
   uploadFrameImage,
 } from '../services/supabaseService';
 import AdminCustomerQuotes from './AdminCustomerQuotes';
+import OpticalImage from './OpticalImage';
 
 interface AdminFramesPanelProps {
   onNavigateToCatalog: () => void;
@@ -501,10 +502,13 @@ export default function AdminFramesPanel({
               />
               {activePreviewSrc ? (
                 <div className="flex flex-col sm:flex-row items-center gap-4 text-left">
-                  <img
+                  <OpticalImage
                     src={activePreviewSrc}
-                    alt="Pré-visualização"
-                    className="w-28 h-20 object-cover rounded-xl border border-slate-200 bg-white flex-shrink-0"
+                    alt="Pré-visualização da armação"
+                    variant="thumb"
+                    loading="eager"
+                    className="w-28 h-20 object-cover object-center rounded-xl border border-slate-200 bg-white flex-shrink-0"
+                    fallbackClassName="w-28 h-20 rounded-xl flex-shrink-0"
                   />
                   <div className="flex-grow">
                     <p className="text-xs font-bold text-slate-800">
@@ -616,11 +620,12 @@ export default function AdminFramesPanel({
                   key={frame.id}
                   className="p-3 bg-slate-50 border border-slate-200/80 rounded-2xl flex items-start gap-3 hover:border-gold-300 transition-colors"
                 >
-                  <img
+                  <OpticalImage
                     src={frame.imageUrl}
                     alt={frame.name}
-                    referrerPolicy="no-referrer"
-                    className="w-20 h-16 object-cover rounded-xl border border-slate-200 bg-white flex-shrink-0"
+                    variant="thumb"
+                    className="w-20 h-16 object-cover object-center rounded-xl border border-slate-200 bg-white flex-shrink-0"
+                    fallbackClassName="w-20 h-16 rounded-xl flex-shrink-0"
                   />
                   <div className="flex-grow min-w-0">
                     <div className="flex items-start justify-between gap-2">

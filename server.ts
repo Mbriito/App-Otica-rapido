@@ -1,8 +1,8 @@
 import 'dotenv/config';
-import express from 'express';
+import express, { type NextFunction, type Request, type Response } from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -32,27 +32,70 @@ function createGeminiClient(): GoogleGenAI | null {
   });
 }
 
+function parseJsonResponseText(rawText: string): Record<string, unknown> | null {
+  const trimmed = rawText.trim();
+  if (!trimmed) return null;
+
+  const candidates = [trimmed];
+  const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fencedMatch?.[1]) {
+    candidates.push(fencedMatch[1].trim());
+  }
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === 'object') {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Try next candidate
+    }
+  }
+  return null;
+}
+
 async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
 
-  app.use(express.json({ limit: '16mb' }));
+  // Dedicated /api router: ALWAYS returns application/json and never falls through to SPA HTML
+  const apiRouter = express.Router();
 
-  app.post('/api/prescriptions/read', async (req, res) => {
+  apiRouter.use((_req, res, next) => {
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    next();
+  });
+
+  apiRouter.use(express.json({ limit: '20mb' }));
+
+  apiRouter.get('/health', (_req, res) => {
+    res.status(200).json({
+      ok: true,
+      service: 'otica-rapido-api',
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  apiRouter.post('/prescriptions/read', async (req: Request, res: Response) => {
     try {
-      const { fileBase64, mimeType } = req.body as {
-        fileBase64?: string;
-        mimeType?: string;
+      const body = (req.body && typeof req.body === 'object' ? req.body : {}) as {
+        fileBase64?: unknown;
+        mimeType?: unknown;
       };
 
-      if (!fileBase64 || typeof fileBase64 !== 'string') {
+      const fileBase64 = typeof body.fileBase64 === 'string' ? body.fileBase64 : '';
+      const mimeType = typeof body.mimeType === 'string' ? body.mimeType : '';
+
+      if (!fileBase64) {
         res.status(400).json({
           error: 'Arquivo da receita não enviado. Selecione ou arraste uma foto ou PDF.',
         });
         return;
       }
 
-      const normalizedMime = (mimeType || '').toLowerCase().trim();
+      const normalizedMime = mimeType.toLowerCase().trim();
       if (!ALLOWED_MIME_TYPES.has(normalizedMime)) {
         res.status(400).json({
           error: 'Formato não suportado. Envie uma imagem (JPG, PNG, WEBP) ou arquivo PDF.',
@@ -61,11 +104,18 @@ async function startServer() {
       }
 
       const cleanBase64 = fileBase64.includes(',')
-        ? fileBase64.slice(fileBase64.indexOf(',') + 1).trim()
-        : fileBase64.trim();
+        ? fileBase64.slice(fileBase64.indexOf(',') + 1).replace(/\s+/g, '')
+        : fileBase64.replace(/\s+/g, '');
 
-      if (!cleanBase64 || cleanBase64.length > MAX_BASE64_LENGTH) {
+      if (!cleanBase64 || !/^[A-Za-z0-9+/=]+$/.test(cleanBase64)) {
         res.status(400).json({
+          error: 'O conteúdo do arquivo enviado está corrompido ou inválido. Tente enviar a imagem novamente.',
+        });
+        return;
+      }
+
+      if (cleanBase64.length > MAX_BASE64_LENGTH) {
+        res.status(413).json({
           error: 'O arquivo excede o tamanho máximo permitido (10MB). Tente uma foto mais leve.',
         });
         return;
@@ -136,6 +186,7 @@ Regras estritas de extração:
           },
           config: {
             systemInstruction,
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
             responseMimeType: 'application/json',
             responseSchema: {
               type: Type.OBJECT,
@@ -164,11 +215,13 @@ Regras estritas de extração:
                 oe: eyeSchema,
                 observation: {
                   type: Type.STRING,
-                  description: 'Observações clínicas, recomendações de lentes ou tipo de uso (longe/perto/multifocal)',
+                  description:
+                    'Observações clínicas, recomendações de lentes ou tipo de uso (longe/perto/multifocal)',
                 },
                 confidenceNote: {
                   type: Type.STRING,
-                  description: 'Aviso curto em português caso algum dado precise ser conferido manualmente',
+                  description:
+                    'Aviso curto em português caso algum dado precise ser conferido manualmente',
                 },
               },
               required: [
@@ -189,8 +242,9 @@ Regras estritas de extração:
       let response;
       try {
         response = await callModel();
-      } catch (firstErr: any) {
-        const status = Number(firstErr?.status || firstErr?.code);
+      } catch (firstErr: unknown) {
+        const errObj = firstErr as { status?: number; code?: number };
+        const status = Number(errObj?.status || errObj?.code);
         if (status >= 500 || !status) {
           await new Promise((r) => setTimeout(r, 800));
           response = await callModel();
@@ -200,18 +254,20 @@ Regras estritas de extração:
       }
 
       const rawText = (response.text ?? '').trim();
-      if (!rawText) {
+      const parsed = parseJsonResponseText(rawText);
+      if (!parsed) {
         res.status(502).json({
-          error: 'Não foi possível interpretar o retorno da leitura. Tente enviar uma foto mais nítida.',
+          error:
+            'Não foi possível interpretar o retorno da leitura. Tente enviar uma foto mais nítida.',
         });
         return;
       }
 
-      const parsed = JSON.parse(rawText);
-      res.json(parsed);
-    } catch (err: any) {
-      const msg = String(err?.message || '');
-      const status = Number(err?.status || err?.code || 500);
+      res.status(200).json(parsed);
+    } catch (err: unknown) {
+      const errObj = err as { message?: string; status?: number; code?: number };
+      const msg = String(errObj?.message || '');
+      const status = Number(errObj?.status || errObj?.code || 500);
 
       if (status === 403 || msg.includes('PERMISSION_DENIED') || msg.includes('API_KEY_INVALID')) {
         res.status(403).json({
@@ -223,17 +279,61 @@ Regras estritas de extração:
 
       if (status === 429 || msg.includes('RESOURCE_EXHAUSTED')) {
         res.status(429).json({
-          error: 'Limite temporário de leituras atingido. Aguarde alguns instantes e tente novamente.',
+          error:
+            'Limite temporário de leituras atingido. Aguarde alguns instantes e tente novamente.',
+        });
+        return;
+      }
+
+      if (status === 404 || msg.includes('NOT_FOUND')) {
+        res.status(502).json({
+          error: 'Modelo de leitura óptica temporariamente indisponível. Tente novamente em instantes.',
         });
         return;
       }
 
       console.error('Erro ao ler receita:', err);
       res.status(500).json({
-        error: 'Erro ao processar a leitura da receita. Verifique se a imagem está nítida e tente novamente.',
+        error:
+          'Erro ao processar a leitura da receita. Verifique se a imagem está nítida e tente novamente.',
       });
     }
   });
+
+  // Catch any unmatched /api/* route with JSON 404 so it NEVER falls back to SPA HTML
+  apiRouter.use((req: Request, res: Response) => {
+    res.status(404).json({
+      error: `Rota de API não encontrada: ${req.method} /api${req.path}`,
+    });
+  });
+
+  // JSON error handler for body-parser errors (413 Payload Too Large, 400 Invalid JSON, etc.)
+  apiRouter.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    const errObj = err as { type?: string; status?: number; statusCode?: number };
+    const statusCode = Number(errObj?.status || errObj?.statusCode || 500);
+
+    if (errObj?.type === 'entity.too.large' || statusCode === 413) {
+      res.status(413).json({
+        error:
+          'O arquivo enviado excede o limite de tamanho aceito pelo servidor. Envie uma imagem mais leve.',
+      });
+      return;
+    }
+
+    if (errObj?.type === 'entity.parse.failed' || statusCode === 400) {
+      res.status(400).json({
+        error: 'Requisição JSON inválida ao enviar a receita. Tente novamente.',
+      });
+      return;
+    }
+
+    console.error('Erro inesperado na API:', err);
+    res.status(statusCode >= 400 && statusCode < 600 ? statusCode : 500).json({
+      error: 'Erro interno ao processar a solicitação na API.',
+    });
+  });
+
+  app.use('/api', apiRouter);
 
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
@@ -245,7 +345,11 @@ Regras estritas de extração:
   } else {
     const distPath = path.resolve(__dirname, 'dist');
     app.use(express.static(distPath));
-    app.get('*', (_req, res) => {
+    app.get('*', (req, res) => {
+      if (req.path.startsWith('/api')) {
+        res.status(404).json({ error: `Rota de API não encontrada: ${req.path}` });
+        return;
+      }
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }

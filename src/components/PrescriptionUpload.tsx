@@ -47,6 +47,64 @@ interface PrescriptionReadResponse {
 }
 
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
+const TARGET_MAX_BASE64_CHARS = 950_000; // ~700KB decoded, safe for all reverse proxies
+
+function inferMimeType(file: File): string {
+  const direct = (file.type || '').toLowerCase().trim();
+  if (direct) {
+    return direct === 'image/jpg' ? 'image/jpeg' : direct;
+  }
+  const lowerName = file.name.toLowerCase();
+  if (lowerName.endsWith('.pdf')) return 'application/pdf';
+  if (lowerName.endsWith('.png')) return 'image/png';
+  if (lowerName.endsWith('.webp')) return 'image/webp';
+  if (lowerName.endsWith('.gif')) return 'image/gif';
+  if (lowerName.endsWith('.jpg') || lowerName.endsWith('.jpeg')) return 'image/jpeg';
+  return '';
+}
+
+function resolvePrescriptionReadUrl(): string {
+  const customBase = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim();
+  if (customBase) {
+    return `${customBase.replace(/\/+$/, '')}/api/prescriptions/read`;
+  }
+  if (typeof window !== 'undefined' && window.location?.origin) {
+    return new URL('/api/prescriptions/read', window.location.origin).toString();
+  }
+  return '/api/prescriptions/read';
+}
+
+function formatNonJsonDiagnostic(
+  status: number,
+  statusText: string,
+  contentType: string,
+  rawBody: string
+): string {
+  const plainSnippet = rawBody
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 160);
+
+  let hint = 'O servidor retornou uma resposta inesperada (não JSON).';
+  if (status === 413) {
+    hint = 'A imagem enviada ficou acima do limite aceito pelo servidor.';
+  } else if (status === 404) {
+    hint = 'Endpoint de leitura (/api/prescriptions/read) não encontrado neste ambiente.';
+  } else if (status === 502 || status === 503 || status === 504) {
+    hint = 'O servidor demorou para responder ou está reiniciando. Tente novamente em instantes.';
+  } else if (status === 401 || status === 403) {
+    hint = 'Acesso bloqueado pelo proxy/servidor ao chamar a rota de leitura.';
+  }
+
+  const statusLabel = `HTTP ${status}${statusText ? ` ${statusText}` : ''}`;
+  const typeLabel = contentType ? ` (${contentType.split(';')[0].trim()})` : '';
+  const snippetLabel = plainSnippet ? ` — Trecho: "${plainSnippet}"` : '';
+
+  return `${hint} [${statusLabel}${typeLabel}]${snippetLabel}`;
+}
 
 function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -58,37 +116,47 @@ function readFileAsDataUrl(file: File): Promise<string> {
 }
 
 async function prepareFileForOcr(file: File): Promise<{ base64: string; mimeType: string }> {
+  const inferredMime = inferMimeType(file);
   const dataUrl = await readFileAsDataUrl(file);
 
   // PDFs are sent as-is (Gemini natively reads PDFs via inlineData)
-  if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+  if (inferredMime === 'application/pdf') {
     return { base64: dataUrl, mimeType: 'application/pdf' };
   }
 
-  // Resize large photos while preserving high legibility for handwriting and tables
+  // Resize and compress photos cleanly so WhatsApp/camera images stay crisp and well under proxy size limits
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
-      const maxDim = 1800;
-      const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
-      if (scale === 1 && file.size <= 3 * 1024 * 1024) {
-        resolve({ base64: dataUrl, mimeType: file.type || 'image/jpeg' });
+      const renderScaledJpeg = (maxDim: number, quality: number): string | null => {
+        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(img.width * scale));
+        canvas.height = Math.max(1, Math.round(img.height * scale));
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return null;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        return canvas.toDataURL('image/jpeg', quality);
+      };
+
+      const firstPass = renderScaledJpeg(1400, 0.82);
+      if (firstPass && firstPass.length <= TARGET_MAX_BASE64_CHARS) {
+        resolve({ base64: firstPass, mimeType: 'image/jpeg' });
         return;
       }
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.round(img.width * scale);
-      canvas.height = Math.round(img.height * scale);
-      const ctx = canvas.getContext('2d');
-      if (!ctx) {
-        resolve({ base64: dataUrl, mimeType: file.type || 'image/jpeg' });
+
+      const secondPass = renderScaledJpeg(1100, 0.7);
+      if (secondPass) {
+        resolve({ base64: secondPass, mimeType: 'image/jpeg' });
         return;
       }
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      const compressed = canvas.toDataURL('image/jpeg', 0.9);
-      resolve({ base64: compressed, mimeType: 'image/jpeg' });
+
+      resolve({ base64: dataUrl, mimeType: inferredMime || 'image/jpeg' });
     };
     img.onerror = () => {
-      resolve({ base64: dataUrl, mimeType: file.type || 'image/jpeg' });
+      resolve({ base64: dataUrl, mimeType: inferredMime || 'image/jpeg' });
     };
     img.src = dataUrl;
   });
@@ -180,9 +248,9 @@ export default function PrescriptionUpload({
     setConfidenceNote(null);
     setSaveFeedback(null);
 
-    const isPdf =
-      selectedFile.type === 'application/pdf' || selectedFile.name.toLowerCase().endsWith('.pdf');
-    const isImage = selectedFile.type.startsWith('image/');
+    const detectedMime = inferMimeType(selectedFile);
+    const isPdf = detectedMime === 'application/pdf';
+    const isImage = detectedMime.startsWith('image/');
 
     if (!isImage && !isPdf) {
       setScanError('Formato não suportado. Envie uma imagem (JPG, PNG, WEBP) ou arquivo PDF.');
@@ -204,21 +272,44 @@ export default function PrescriptionUpload({
 
     try {
       const { base64, mimeType } = await prepareFileForOcr(selectedFile);
+      const endpointUrl = resolvePrescriptionReadUrl();
 
-      const response = await fetch('/api/prescriptions/read', {
+      const response = await fetch(endpointUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        credentials: 'same-origin',
         body: JSON.stringify({
           fileBase64: base64,
           mimeType,
         }),
       });
 
-      const data = (await response.json()) as PrescriptionReadResponse;
+      const contentType = response.headers.get('content-type') || '';
+      const rawBody = await response.text();
+      const isJsonResponse = contentType.toLowerCase().includes('application/json');
+
+      let data: PrescriptionReadResponse | null = null;
+      if (isJsonResponse && rawBody.trim()) {
+        try {
+          data = JSON.parse(rawBody) as PrescriptionReadResponse;
+        } catch {
+          data = null;
+        }
+      }
+
+      if (!isJsonResponse || !data) {
+        throw new Error(
+          formatNonJsonDiagnostic(response.status, response.statusText, contentType, rawBody)
+        );
+      }
 
       if (!response.ok) {
         throw new Error(
-          data?.error || 'Não foi possível ler a receita enviada. Tente novamente.'
+          data.error ||
+            `Não foi possível ler a receita enviada (HTTP ${response.status}). Tente novamente.`
         );
       }
 
@@ -259,11 +350,12 @@ export default function PrescriptionUpload({
         setConfidenceNote(data.confidenceNote.trim());
       }
       setScanComplete(true);
-    } catch (err: any) {
-      setScanError(
-        err?.message ||
-          'Erro ao realizar a leitura automática da receita. Você pode tentar novamente ou digitar os valores ao lado.'
-      );
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : 'Erro ao realizar a leitura automática da receita. Você pode tentar novamente ou digitar os valores ao lado.';
+      setScanError(message);
     } finally {
       setIsScanning(false);
     }
