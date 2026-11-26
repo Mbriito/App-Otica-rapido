@@ -55,6 +55,8 @@ import {
 
 interface AdminCustomerQuotesProps {
   customFrames: EyewearFrame[];
+  catalogFrames?: EyewearFrame[];
+  adminToken: string;
   onOpenQuoteInManager: (quote: OpticalQuote) => void;
   onQuotesCountChange?: (count: number) => void;
 }
@@ -126,10 +128,19 @@ function createEmptyDraftItem(defaultFrame?: EyewearFrame): DraftItem {
 
 export default function AdminCustomerQuotes({
   customFrames,
+  catalogFrames,
+  adminToken,
   onOpenQuoteInManager,
   onQuotesCountChange,
 }: AdminCustomerQuotesProps) {
-  const allFrames = useMemo(() => [...customFrames, ...premiumFrames], [customFrames]);
+  const allFrames = useMemo(
+    () => (catalogFrames && catalogFrames.length > 0 ? catalogFrames : [...customFrames, ...premiumFrames]),
+    [catalogFrames, customFrames]
+  );
+  const standardFrames = useMemo(
+    () => allFrames.filter((f) => !f.isCustom),
+    [allFrames]
+  );
 
   // Saved data
   const [quotes, setQuotes] = useState<OpticalQuote[]>([]);
@@ -533,15 +544,29 @@ export default function AdminCustomerQuotes({
   };
 
   const handleChangeQuoteStatus = async (quoteId: string, newStatus: QuoteStatus) => {
-    await updateQuoteStatus(quoteId, newStatus);
+    try {
+      await updateQuoteStatus(quoteId, newStatus, adminToken);
+    } catch (err: unknown) {
+      setFeedback({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Permissão ADM necessária para alterar status.',
+      });
+    }
   };
 
   const handleDeleteQuote = async (quoteId: string) => {
-    await deleteQuoteRecord(quoteId);
-    if (editingQuoteId === quoteId) {
-      resetForm();
+    try {
+      await deleteQuoteRecord(quoteId, adminToken);
+      if (editingQuoteId === quoteId) {
+        resetForm();
+      }
+      setFeedback({ type: 'success', message: 'Orçamento removido do histórico.' });
+    } catch (err: unknown) {
+      setFeedback({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Permissão ADM necessária para remover orçamento.',
+      });
     }
-    setFeedback({ type: 'success', message: 'Orçamento removido do histórico.' });
   };
 
   const handleCopyQuoteSummary = (quote: OpticalQuote) => {
@@ -896,10 +921,10 @@ export default function AdminCustomerQuotes({
                                 </optgroup>
                               )}
                               <optgroup label="Modelos de Referência do Catálogo">
-                                {premiumFrames.map((f) => (
+                                {standardFrames.map((f) => (
                                   <option key={f.id} value={f.id}>
                                     {f.referenceCode ? `${f.referenceCode} · ` : ''}
-                                    {f.name}
+                                    {f.name} — {formatBRL(f.price)}
                                   </option>
                                 ))}
                               </optgroup>

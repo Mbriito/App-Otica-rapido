@@ -24,6 +24,14 @@ CREATE TABLE IF NOT EXISTS public.frames (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- 1B. TABELA DE PREÇOS INDIVIDUAIS EDITADOS PELO ADM (Modelos do Catálogo Padrão)
+CREATE TABLE IF NOT EXISTS public.frame_price_overrides (
+  frame_id TEXT PRIMARY KEY,
+  price NUMERIC(10, 2) NOT NULL CHECK (price >= 120),
+  updated_by TEXT DEFAULT 'admin',
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- 2. TABELA DE CLIENTES (Login Rápido Sem Senha / Passwordless)
 CREATE TABLE IF NOT EXISTS public.customers (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -126,12 +134,14 @@ ALTER TABLE public.quotes ADD COLUMN IF NOT EXISTS prescription JSONB;
 -- HABILITAR REALTIME PARA O CATÁLOGO DE ARMAÇÕES E ORÇAMENTOS
 -- ============================================================================
 ALTER PUBLICATION supabase_realtime ADD TABLE public.frames;
+ALTER PUBLICATION supabase_realtime ADD TABLE public.frame_price_overrides;
 ALTER PUBLICATION supabase_realtime ADD TABLE public.quotes;
 
 -- ============================================================================
 -- SEGURANÇA & RLS (Row Level Security - Conformidade LGPD)
 -- ============================================================================
 ALTER TABLE public.frames ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.frame_price_overrides ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.customers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.prescriptions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.home_visit_appointments ENABLE ROW LEVEL SECURITY;
@@ -143,9 +153,25 @@ CREATE POLICY "Catalogo leitura publica" ON public.frames
   FOR SELECT USING (true);
 
 CREATE POLICY "Catalogo insercao admin" ON public.frames
-  FOR INSERT WITH CHECK (true);
+  FOR INSERT WITH CHECK (price >= 120);
+
+CREATE POLICY "Catalogo atualizacao admin" ON public.frames
+  FOR UPDATE USING (true) WITH CHECK (price >= 120);
 
 CREATE POLICY "Catalogo exclusao admin" ON public.frames
+  FOR DELETE USING (true);
+
+-- Preços individuais do catálogo padrão (somente leitura pública; edição via ADM)
+CREATE POLICY "Precos catalogo leitura publica" ON public.frame_price_overrides
+  FOR SELECT USING (true);
+
+CREATE POLICY "Precos catalogo insercao admin" ON public.frame_price_overrides
+  FOR INSERT WITH CHECK (price >= 120);
+
+CREATE POLICY "Precos catalogo atualizacao admin" ON public.frame_price_overrides
+  FOR UPDATE USING (true) WITH CHECK (price >= 120);
+
+CREATE POLICY "Precos catalogo exclusao admin" ON public.frame_price_overrides
   FOR DELETE USING (true);
 
 -- Clientes: inserção e atualização controlada para identificação sem senha

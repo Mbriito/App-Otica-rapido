@@ -29,6 +29,21 @@ export interface CustomerSession {
   lastLoginAt: string;
 }
 
+export interface AdminSession {
+  email: string;
+  name: string;
+  role: 'admin';
+  authenticatedAt: string;
+  expiresAt: string;
+}
+
+export interface AdminAuthStatus {
+  configured: boolean;
+  requiresSetup: boolean;
+  source: 'env' | 'claimed' | 'unconfigured';
+  expectedEmailHint?: string;
+}
+
 export interface HomeVisitAppointment {
   id: string;
   protocol: string;

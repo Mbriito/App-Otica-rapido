@@ -8,23 +8,29 @@ import {
   UserCheck,
   LogOut,
   SlidersHorizontal,
+  Lock,
+  ShieldCheck,
 } from 'lucide-react';
-import { CustomerSession } from '../types';
+import { AdminSession, CustomerSession } from '../types';
 
 interface HeaderProps {
   activeSection: string;
   setActiveSection: (sec: string) => void;
   customerSession: CustomerSession | null;
+  adminSession: AdminSession | null;
   onOpenLogin: () => void;
   onLogout: () => void;
+  onLogoutAdmin: () => void;
 }
 
 export default function Header({
   activeSection,
   setActiveSection,
   customerSession,
+  adminSession,
   onOpenLogin,
   onLogout,
+  onLogoutAdmin,
 }: HeaderProps) {
   const navItems = [
     { id: 'home', label: 'Início', mobileLabel: 'Início', icon: Home },
@@ -40,6 +46,8 @@ export default function Header({
       customerSession.email?.split('@')[0] ||
       'Minha Conta'
     : 'Identificar-se';
+
+  const isAdminActive = activeSection === 'admin' || activeSection === 'admin-login';
 
   return (
     <header className="sticky top-0 z-50 bg-slate-950 border-b border-slate-900 shadow-xl backdrop-blur-md bg-opacity-95 print:hidden">
@@ -85,12 +93,12 @@ export default function Header({
             })}
           </nav>
 
-          {/* Right Actions: Customer Identification + Admin */}
+          {/* Right Actions: Customer Identification + Admin Login/Panel */}
           <div className="flex items-center gap-2 flex-shrink-0">
             {customerSession ? (
               <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1.5">
                 <UserCheck className="h-3.5 w-3.5 text-gold-400 flex-shrink-0" />
-                <span className="text-xs font-semibold text-white max-w-[110px] truncate">
+                <span className="text-xs font-semibold text-white max-w-[100px] truncate">
                   {customerLabel}
                 </span>
                 <button
@@ -113,19 +121,45 @@ export default function Header({
               </button>
             )}
 
-            <button
-              type="button"
-              onClick={() => setActiveSection('admin')}
-              title="Painel Administrativo (/admin)"
-              className={`hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer whitespace-nowrap ${
-                activeSection === 'admin'
-                  ? 'bg-gold-500 text-slate-950 border-gold-500 font-bold'
-                  : 'bg-slate-900/70 text-slate-300 border-slate-800 hover:text-white hover:border-slate-700'
-              }`}
-            >
-              <SlidersHorizontal className="h-3.5 w-3.5" />
-              <span>Admin</span>
-            </button>
+            {adminSession ? (
+              <div className="hidden sm:flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setActiveSection('admin')}
+                  title="Abrir Painel Administrativo (/admin)"
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all cursor-pointer whitespace-nowrap ${
+                    activeSection === 'admin'
+                      ? 'bg-gold-500 text-slate-950 border-gold-500'
+                      : 'bg-emerald-950/80 text-emerald-300 border-emerald-700/70 hover:bg-emerald-900/80'
+                  }`}
+                >
+                  <ShieldCheck className="h-3.5 w-3.5" />
+                  <span>Painel ADM</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={onLogoutAdmin}
+                  title="Sair do modo ADM"
+                  className="p-1.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-400 hover:text-rose-400 hover:border-rose-500/40 transition-colors cursor-pointer"
+                >
+                  <LogOut className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setActiveSection('admin-login')}
+                title="Login Administrativo (ADM)"
+                className={`hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer whitespace-nowrap ${
+                  isAdminActive
+                    ? 'bg-gold-500 text-slate-950 border-gold-500 font-bold'
+                    : 'bg-slate-900/70 text-slate-300 border-slate-800 hover:text-white hover:border-slate-700'
+                }`}
+              >
+                <Lock className="h-3.5 w-3.5" />
+                <span>Login ADM</span>
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -151,13 +185,21 @@ export default function Header({
         })}
         <button
           type="button"
-          onClick={() => setActiveSection('admin')}
+          onClick={() => setActiveSection(adminSession ? 'admin' : 'admin-login')}
           className={`flex flex-col items-center gap-1 px-2.5 py-1 rounded-md text-[10px] font-sans font-medium transition-all whitespace-nowrap cursor-pointer ${
-            activeSection === 'admin' ? 'text-gold-400 font-semibold' : 'text-slate-400'
+            isAdminActive
+              ? 'text-gold-400 font-semibold'
+              : adminSession
+                ? 'text-emerald-400'
+                : 'text-slate-400'
           }`}
         >
-          <SlidersHorizontal className="h-4 w-4" />
-          <span>Admin</span>
+          {adminSession ? (
+            <SlidersHorizontal className="h-4 w-4" />
+          ) : (
+            <Lock className="h-4 w-4" />
+          )}
+          <span>{adminSession ? 'ADM' : 'Login ADM'}</span>
         </button>
       </div>
     </header>

@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { premiumFrames } from '../data/frames';
+import { MIN_FRAME_PRICE, premiumFrames } from '../data/frames';
 import { EyewearFrame } from '../types';
 import { Filter, SlidersHorizontal, Check, ShieldCheck, Sparkles, MessageSquare, ShoppingCart, ArrowRight, Eye, Sun, UserCheck, RefreshCw } from 'lucide-react';
 import FaceShapeGuide from './FaceShapeGuide';
 import OpticalImage from './OpticalImage';
 import catalogEyewearHero from '../assets/images/catalog_eyewear_hero_1795637102870.jpg';
-import { fetchCustomFrames, subscribeToCustomFrames } from '../services/supabaseService';
+import { fetchCatalogFrames, subscribeToCatalogUpdates } from '../services/supabaseService';
+import { formatBRL } from '../utils/quoteUtils';
 
 interface CatalogProps {
   onSelectFrameForQuote: (frame: EyewearFrame, color: string, lensType: string, lensPrice: number) => void;
@@ -17,7 +18,7 @@ export default function Catalog({ onSelectFrameForQuote, onNavigateToPrescriptio
   const [selectedGender, setSelectedGender] = useState<string>('todos');
   const [selectedShape, setSelectedShape] = useState<string>('todos');
   const [selectedMaterial, setSelectedMaterial] = useState<string>('todos');
-  const [customFrames, setCustomFrames] = useState<EyewearFrame[]>([]);
+  const [allFrames, setAllFrames] = useState<EyewearFrame[]>(premiumFrames);
   const [selectedFrame, setSelectedFrame] = useState<EyewearFrame | null>(null);
   const [chosenColor, setChosenColor] = useState<string>('');
   const [chosenLens, setChosenLens] = useState<{ name: string; price: number }>({
@@ -27,12 +28,17 @@ export default function Catalog({ onSelectFrameForQuote, onNavigateToPrescriptio
 
   useEffect(() => {
     let active = true;
-    fetchCustomFrames().then((frames) => {
-      if (active) setCustomFrames(frames);
+    fetchCatalogFrames().then(({ allFrames: loaded }) => {
+      if (active) setAllFrames(loaded);
     });
 
-    const unsubscribe = subscribeToCustomFrames((frames) => {
-      if (active) setCustomFrames(frames);
+    const unsubscribe = subscribeToCatalogUpdates(({ allFrames: updated }) => {
+      if (active) {
+        setAllFrames(updated);
+        setSelectedFrame((current) =>
+          current ? updated.find((f) => f.id === current.id) || current : null
+        );
+      }
     });
 
     return () => {
@@ -40,8 +46,6 @@ export default function Catalog({ onSelectFrameForQuote, onNavigateToPrescriptio
       unsubscribe();
     };
   }, []);
-
-  const allFrames = [...customFrames, ...premiumFrames];
 
   // Opções de Lentes para orçamentação
   const lensOptions = [
@@ -77,9 +81,11 @@ export default function Catalog({ onSelectFrameForQuote, onNavigateToPrescriptio
   const getWhatsAppMessageUrl = (frame: EyewearFrame, color: string, lens: string) => {
     const shapeFormatted = frame.shape === 'gatinho' ? 'De Gatinha' : frame.shape.charAt(0).toUpperCase() + frame.shape.slice(1);
     const categoryFormatted = frame.category === 'sol' ? 'Óculos de Sol' : 'Óculos de Grau';
+    const framePrice = Math.max(MIN_FRAME_PRICE, Number(frame.price) || MIN_FRAME_PRICE);
     
-    const text = `Olá, *Ótica Rapido*! Gostei deste modelo no catálogo de referências:\n\n` +
+    const text = `Olá, *Ótica Rapido*! Gostei deste modelo no catálogo:\n\n` +
       `🕶️ *Modelo:* ${frame.name} (${frame.referenceCode || 'Ref. Ótica'})\n` +
+      `💰 *Valor da Armação:* ${formatBRL(framePrice)}\n` +
       `📐 *Formato:* ${shapeFormatted} (${categoryFormatted})\n` +
       `🎨 *Cor Selecionada:* ${color}\n` +
       `🔬 *Tipo de Lentes:* ${lens}\n\n` +
@@ -278,12 +284,13 @@ export default function Catalog({ onSelectFrameForQuote, onNavigateToPrescriptio
 
         {/* EYEWEAR REFERENCE LIST */}
         <div className="lg:col-span-3">
-          <div className="flex items-center justify-between mb-6">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-6">
             <span className="text-sm font-sans text-slate-600 font-medium">
-              Exibindo <strong className="text-slate-900 font-bold">{filteredFrames.length}</strong> modelos de referência para escolha
+              Exibindo <strong className="text-slate-900 font-bold">{filteredFrames.length}</strong> modelos disponíveis · A partir de{' '}
+              <strong className="text-emerald-800 font-mono">{formatBRL(MIN_FRAME_PRICE)}</strong>
             </span>
             <div className="flex items-center gap-2 text-xs font-mono text-slate-400">
-              <span>Modelos Atualizados 2025/2026</span>
+              <span>Tabela Oficial 2025/2026</span>
             </div>
           </div>
 
@@ -328,11 +335,9 @@ export default function Catalog({ onSelectFrameForQuote, onNavigateToPrescriptio
                       <h4 className="font-display font-bold text-base text-slate-900 group-hover:text-gold-700 transition-colors">
                         {frame.name}
                       </h4>
-                      {frame.price > 0 && (
-                        <span className="font-mono font-bold text-xs text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-md flex-shrink-0">
-                          R$ {frame.price.toFixed(2).replace('.', ',')}
-                        </span>
-                      )}
+                      <span className="font-mono font-bold text-xs text-emerald-900 bg-emerald-50 border border-emerald-200/80 px-2.5 py-1 rounded-lg flex-shrink-0 tabular-nums">
+                        {formatBRL(Math.max(MIN_FRAME_PRICE, Number(frame.price) || MIN_FRAME_PRICE))}
+                      </span>
                     </div>
 
                     <div className="flex items-center gap-2 mb-2.5">
@@ -433,6 +438,30 @@ export default function Catalog({ onSelectFrameForQuote, onNavigateToPrescriptio
                   >
                     ×
                   </button>
+                </div>
+
+                <div className="flex items-center justify-between gap-3 p-3.5 mb-4 rounded-xl bg-emerald-50/80 border border-emerald-200/80">
+                  <div>
+                    <span className="block text-[10px] font-mono uppercase tracking-wider text-emerald-800 font-bold">
+                      Valor Oficial da Armação
+                    </span>
+                    <span className="font-mono text-lg font-black text-emerald-950 tabular-nums">
+                      {formatBRL(
+                        Math.max(MIN_FRAME_PRICE, Number(selectedFrame.price) || MIN_FRAME_PRICE)
+                      )}
+                    </span>
+                  </div>
+                  <div className="text-right">
+                    <span className="block text-[10px] font-mono uppercase tracking-wider text-slate-500">
+                      Total Estimado (c/ Lentes)
+                    </span>
+                    <span className="font-mono text-base font-black text-slate-950 tabular-nums">
+                      {formatBRL(
+                        Math.max(MIN_FRAME_PRICE, Number(selectedFrame.price) || MIN_FRAME_PRICE) +
+                          chosenLens.price
+                      )}
+                    </span>
+                  </div>
                 </div>
 
                 <p className="text-xs text-slate-600 mb-5 leading-relaxed">

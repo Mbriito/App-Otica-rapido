@@ -1,4 +1,6 @@
 import { supabase } from '../lib/supabase';
+import { MIN_FRAME_PRICE, premiumFrames } from '../data/frames';
+import { verifyCurrentAdminSession } from './adminAuthService';
 import {
   CustomerSession,
   EyewearFrame,
@@ -12,6 +14,7 @@ import { calculateQuoteTotals } from '../utils/quoteUtils';
 
 const STORAGE_KEYS = {
   CUSTOM_FRAMES: 'otica_rapido_custom_frames_v1',
+  FRAME_PRICE_OVERRIDES: 'otica_rapido_frame_price_overrides_v1',
   CUSTOMER_SESSION: 'otica_rapido_customer_session_v1',
   CUSTOMERS_DB: 'otica_rapido_customers_v1',
   PRESCRIPTIONS: 'otica_rapido_prescriptions_v1',
@@ -23,6 +26,22 @@ const STORAGE_KEYS = {
 const FRAMES_UPDATED_EVENT = 'otica-frames-updated';
 const QUOTES_UPDATED_EVENT = 'otica-quotes-updated';
 const PRESCRIPTIONS_UPDATED_EVENT = 'otica-prescriptions-updated';
+
+async function assertVerifiedAdmin(adminToken?: string | null): Promise<string> {
+  const verified = await verifyCurrentAdminSession(adminToken);
+  if (!verified || verified.role !== 'admin') {
+    throw new Error('Permissão negada: apenas um administrador (ADM) autenticado pode realizar esta alteração.');
+  }
+  return verified.email;
+}
+
+function normalizeFramePrice(rawPrice: number): number {
+  const numeric = Number(rawPrice);
+  if (!Number.isFinite(numeric) || numeric < MIN_FRAME_PRICE) {
+    return MIN_FRAME_PRICE;
+  }
+  return Math.round(numeric * 100) / 100;
+}
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 function isUuid(value?: string): boolean {
@@ -108,7 +127,7 @@ function mapRowToFrame(row: SupabaseFrameRow): EyewearFrame {
     referenceCode: row.reference_code,
     name: row.name,
     brand: row.brand,
-    price: Number(row.price) || 0,
+    price: normalizeFramePrice(Number(row.price)),
     category: row.category,
     gender: row.gender,
     shape: row.shape,
@@ -120,6 +139,77 @@ function mapRowToFrame(row: SupabaseFrameRow): EyewearFrame {
     rating: Number(row.rating) || 5.0,
     isCustom: true,
     createdAt: row.created_at,
+  };
+}
+
+export async function fetchFramePriceOverrides(): Promise<Record<string, number>> {
+  const localOverrides = readJsonStorage<Record<string, number>>(
+    STORAGE_KEYS.FRAME_PRICE_OVERRIDES,
+    {}
+  );
+
+  if (!supabase) {
+    return localOverrides;
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('frame_price_overrides')
+      .select('frame_id, price');
+
+    if (error || !data) {
+      return localOverrides;
+    }
+
+    const remoteMap: Record<string, number> = {};
+    for (const row of data as Array<{ frame_id: string; price: number }>) {
+      if (row.frame_id) {
+        remoteMap[row.frame_id] = normalizeFramePrice(Number(row.price));
+      }
+    }
+    const merged = { ...localOverrides, ...remoteMap };
+    writeJsonStorage(STORAGE_KEYS.FRAME_PRICE_OVERRIDES, merged);
+    return merged;
+  } catch {
+    return localOverrides;
+  }
+}
+
+export function buildCatalogWithPrices(
+  customFrames: EyewearFrame[],
+  priceOverrides: Record<string, number>
+): EyewearFrame[] {
+  const normalizedCustom = customFrames.map((frame) => ({
+    ...frame,
+    price: normalizeFramePrice(
+      typeof priceOverrides[frame.id] === 'number' ? priceOverrides[frame.id] : frame.price
+    ),
+  }));
+
+  const normalizedStandard = premiumFrames.map((frame) => ({
+    ...frame,
+    price: normalizeFramePrice(
+      typeof priceOverrides[frame.id] === 'number' ? priceOverrides[frame.id] : frame.price
+    ),
+  }));
+
+  return [...normalizedCustom, ...normalizedStandard];
+}
+
+export async function fetchCatalogFrames(): Promise<{
+  customFrames: EyewearFrame[];
+  priceOverrides: Record<string, number>;
+  allFrames: EyewearFrame[];
+}> {
+  const [customFrames, priceOverrides] = await Promise.all([
+    fetchCustomFrames(),
+    fetchFramePriceOverrides(),
+  ]);
+
+  return {
+    customFrames,
+    priceOverrides,
+    allFrames: buildCatalogWithPrices(customFrames, priceOverrides),
   };
 }
 
@@ -190,7 +280,20 @@ export interface CreateFramePayload {
   referenceCode?: string;
 }
 
-export async function createCustomFrame(payload: CreateFramePayload): Promise<EyewearFrame> {
+export async function createCustomFrame(
+  payload: CreateFramePayload,
+  adminToken?: string | null
+): Promise<EyewearFrame> {
+  await assertVerifiedAdmin(adminToken);
+
+  const numericPrice = Number(payload.price);
+  if (!Number.isFinite(numericPrice) || numericPrice < MIN_FRAME_PRICE) {
+    throw new Error(
+      `O preço da armação deve ser a partir de R$ ${MIN_FRAME_PRICE.toFixed(2).replace('.', ',')}.`
+    );
+  }
+  const safePrice = normalizeFramePrice(numericPrice);
+
   const referenceCode =
     payload.referenceCode?.trim() ||
     `REF-ADM-${Math.floor(100 + Math.random() * 900)}`;
@@ -200,7 +303,7 @@ export async function createCustomFrame(payload: CreateFramePayload): Promise<Ey
     referenceCode,
     name: payload.name.trim(),
     brand: payload.brand.trim() || 'Ótica Rapido Exclusive',
-    price: Number(payload.price) || 0,
+    price: safePrice,
     category: payload.category,
     gender: payload.gender,
     shape: payload.shape,
@@ -254,7 +357,101 @@ export async function createCustomFrame(payload: CreateFramePayload): Promise<Ey
   return savedFrame;
 }
 
-export async function deleteCustomFrame(frameId: string): Promise<void> {
+export async function updateCatalogFramePrice(params: {
+  frameId: string;
+  price: number;
+  isCustom?: boolean;
+  adminToken?: string | null;
+}): Promise<number> {
+  const adminEmail = await assertVerifiedAdmin(params.adminToken);
+
+  const numericPrice = Number(params.price);
+  if (!Number.isFinite(numericPrice) || numericPrice < MIN_FRAME_PRICE) {
+    throw new Error(
+      `O preço da armação deve ser a partir de R$ ${MIN_FRAME_PRICE.toFixed(2).replace('.', ',')}.`
+    );
+  }
+  const safePrice = normalizeFramePrice(numericPrice);
+
+  if (params.isCustom) {
+    if (supabase && isUuid(params.frameId)) {
+      try {
+        await supabase
+          .from('frames')
+          .update({ price: safePrice })
+          .eq('id', params.frameId);
+      } catch {
+        // Fallback local
+      }
+    }
+    const existing = readJsonStorage<EyewearFrame[]>(STORAGE_KEYS.CUSTOM_FRAMES, []);
+    const updated = existing.map((f) =>
+      f.id === params.frameId ? { ...f, price: safePrice } : f
+    );
+    writeJsonStorage(STORAGE_KEYS.CUSTOM_FRAMES, updated);
+  } else {
+    if (supabase) {
+      try {
+        await supabase.from('frame_price_overrides').upsert(
+          {
+            frame_id: params.frameId,
+            price: safePrice,
+            updated_by: adminEmail,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'frame_id' }
+        );
+      } catch {
+        // Fallback local
+      }
+    }
+    const existingOverrides = readJsonStorage<Record<string, number>>(
+      STORAGE_KEYS.FRAME_PRICE_OVERRIDES,
+      {}
+    );
+    writeJsonStorage(STORAGE_KEYS.FRAME_PRICE_OVERRIDES, {
+      ...existingOverrides,
+      [params.frameId]: safePrice,
+    });
+  }
+
+  window.dispatchEvent(new CustomEvent(FRAMES_UPDATED_EVENT));
+  return safePrice;
+}
+
+export async function resetCatalogFramePrice(
+  frameId: string,
+  adminToken?: string | null
+): Promise<void> {
+  await assertVerifiedAdmin(adminToken);
+
+  if (supabase) {
+    try {
+      await supabase.from('frame_price_overrides').delete().eq('frame_id', frameId);
+    } catch {
+      // Fallback local
+    }
+  }
+
+  const existingOverrides = readJsonStorage<Record<string, number>>(
+    STORAGE_KEYS.FRAME_PRICE_OVERRIDES,
+    {}
+  );
+  if (frameId in existingOverrides) {
+    const next = { ...existingOverrides };
+    delete next[frameId];
+    writeJsonStorage(STORAGE_KEYS.FRAME_PRICE_OVERRIDES, next);
+  }
+
+  window.dispatchEvent(new CustomEvent(FRAMES_UPDATED_EVENT));
+}
+
+export async function deleteCustomFrame(
+  frameId: string,
+  adminToken?: string | null
+): Promise<void> {
+  await assertVerifiedAdmin(adminToken);
+
   if (supabase) {
     try {
       await supabase.from('frames').delete().eq('id', frameId);
@@ -278,7 +475,10 @@ export function subscribeToCustomFrames(onUpdate: (frames: EyewearFrame[]) => vo
   window.addEventListener(FRAMES_UPDATED_EVENT, handleLocalOrRemoteChange);
 
   const handleStorageEvent = (e: StorageEvent) => {
-    if (e.key === STORAGE_KEYS.CUSTOM_FRAMES) {
+    if (
+      e.key === STORAGE_KEYS.CUSTOM_FRAMES ||
+      e.key === STORAGE_KEYS.FRAME_PRICE_OVERRIDES
+    ) {
       handleLocalOrRemoteChange();
     }
   };
@@ -295,11 +495,72 @@ export function subscribeToCustomFrames(onUpdate: (frames: EyewearFrame[]) => vo
           handleLocalOrRemoteChange();
         }
       )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'frame_price_overrides' },
+        () => {
+          handleLocalOrRemoteChange();
+        }
+      )
       .subscribe();
   }
 
   return () => {
     window.removeEventListener(FRAMES_UPDATED_EVENT, handleLocalOrRemoteChange);
+    window.removeEventListener('storage', handleStorageEvent);
+    if (supabase && channel) {
+      supabase.removeChannel(channel);
+    }
+  };
+}
+
+export function subscribeToCatalogUpdates(
+  onUpdate: (data: {
+    customFrames: EyewearFrame[];
+    priceOverrides: Record<string, number>;
+    allFrames: EyewearFrame[];
+  }) => void
+): () => void {
+  const handleChange = async () => {
+    const result = await fetchCatalogFrames();
+    onUpdate(result);
+  };
+
+  window.addEventListener(FRAMES_UPDATED_EVENT, handleChange);
+
+  const handleStorageEvent = (e: StorageEvent) => {
+    if (
+      e.key === STORAGE_KEYS.CUSTOM_FRAMES ||
+      e.key === STORAGE_KEYS.FRAME_PRICE_OVERRIDES
+    ) {
+      handleChange();
+    }
+  };
+  window.addEventListener('storage', handleStorageEvent);
+
+  let channel: ReturnType<NonNullable<typeof supabase>['channel']> | null = null;
+  if (supabase) {
+    channel = supabase
+      .channel(`public:catalog-realtime-${Math.random().toString(36).slice(2, 7)}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'frames' },
+        () => {
+          handleChange();
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'frame_price_overrides' },
+        () => {
+          handleChange();
+        }
+      )
+      .subscribe();
+  }
+
+  return () => {
+    window.removeEventListener(FRAMES_UPDATED_EVENT, handleChange);
     window.removeEventListener('storage', handleStorageEvent);
     if (supabase && channel) {
       supabase.removeChannel(channel);
@@ -1032,7 +1293,13 @@ export async function saveQuoteRecord(
   return savedQuote;
 }
 
-export async function updateQuoteStatus(quoteId: string, status: QuoteStatus): Promise<void> {
+export async function updateQuoteStatus(
+  quoteId: string,
+  status: QuoteStatus,
+  adminToken?: string | null
+): Promise<void> {
+  await assertVerifiedAdmin(adminToken);
+
   if (supabase && isUuid(quoteId)) {
     try {
       await supabase.from('quotes').update({ status }).eq('id', quoteId);
@@ -1047,7 +1314,12 @@ export async function updateQuoteStatus(quoteId: string, status: QuoteStatus): P
   window.dispatchEvent(new CustomEvent(QUOTES_UPDATED_EVENT));
 }
 
-export async function deleteQuoteRecord(quoteId: string): Promise<void> {
+export async function deleteQuoteRecord(
+  quoteId: string,
+  adminToken?: string | null
+): Promise<void> {
+  await assertVerifiedAdmin(adminToken);
+
   if (supabase && isUuid(quoteId)) {
     try {
       await supabase.from('quotes').delete().eq('id', quoteId);

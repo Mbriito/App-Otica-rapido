@@ -6,14 +6,22 @@ import PrescriptionUpload from './components/PrescriptionUpload';
 import QuoteReceiptManager from './components/QuoteReceiptManager';
 import PrivacyPolicyLGPD from './components/PrivacyPolicyLGPD';
 import AdminFramesPanel from './components/AdminFramesPanel';
+import AdminLoginSection from './components/AdminLoginSection';
 import HomeVisitScheduler from './components/HomeVisitScheduler';
 import QuickCustomerLoginModal from './components/QuickCustomerLoginModal';
 import PaulistaLocationMap from './components/PaulistaLocationMap';
-import { CustomerSession, EyewearFrame, MedicalPrescription, OpticalQuote } from './types';
+import {
+  AdminSession,
+  CustomerSession,
+  EyewearFrame,
+  MedicalPrescription,
+  OpticalQuote,
+} from './types';
 import {
   clearCustomerSession,
   getStoredCustomerSession,
 } from './services/supabaseService';
+import { logoutAdmin } from './services/adminAuthService';
 import {
   Glasses,
   Mail,
@@ -25,21 +33,42 @@ import {
   SlidersHorizontal,
 } from 'lucide-react';
 
+function resolveSectionFromPath(pathname: string): string {
+  const path = pathname.toLowerCase();
+  if (path === '/admin' || path.startsWith('/admin/')) return 'admin';
+  if (path === '/login-adm' || path === '/admin-login') return 'admin-login';
+  if (path === '/agendamento') return 'appointments';
+  if (path === '/catalogo') return 'catalog';
+  if (path === '/receita') return 'prescription';
+  if (path === '/orcamentos') return 'quotes';
+  if (path === '/lgpd') return 'lgpd';
+  return 'home';
+}
+
 function resolveInitialSection(): string {
   if (typeof window !== 'undefined') {
-    const path = window.location.pathname.toLowerCase();
-    if (path === '/admin' || path.startsWith('/admin/')) return 'admin';
-    if (path === '/agendamento') return 'appointments';
-    if (path === '/catalogo') return 'catalog';
-    if (path === '/receita') return 'prescription';
-    if (path === '/orcamentos') return 'quotes';
-    if (path === '/lgpd') return 'lgpd';
+    return resolveSectionFromPath(window.location.pathname);
   }
   return 'home';
 }
 
 export default function App() {
-  const [activeSection, setActiveSection] = useState<string>(resolveInitialSection);
+  const initialRequestedSection = resolveInitialSection();
+  const [activeSection, setActiveSection] = useState<string>(() =>
+    initialRequestedSection === 'admin' ? 'admin-login' : initialRequestedSection
+  );
+
+  // Admin session held strictly in React/JS memory (never in localStorage/sessionStorage)
+  const [adminSession, setAdminSession] = useState<AdminSession | null>(null);
+  const [adminToken, setAdminToken] = useState<string | null>(null);
+  const [pendingAdminRedirect, setPendingAdminRedirect] = useState<boolean>(
+    initialRequestedSection === 'admin'
+  );
+  const [adminAccessNotice, setAdminAccessNotice] = useState<string | null>(() =>
+    initialRequestedSection === 'admin'
+      ? 'A rota /admin exige autenticação de Administrador (ADM). Faça login abaixo para continuar.'
+      : null
+  );
 
   // Customer passwordless session state
   const [customerSession, setCustomerSession] = useState<CustomerSession | null>(() =>
@@ -47,6 +76,8 @@ export default function App() {
   );
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
   const [mapsQuotaExceeded, setMapsQuotaExceeded] = useState(false);
+
+  const isAdminAuthenticated = Boolean(adminSession && adminToken && adminSession.role === 'admin');
 
   useEffect(() => {
     const handleQuotaExceeded = () => setMapsQuotaExceeded(true);
@@ -64,9 +95,24 @@ export default function App() {
   );
   const [loadedAdminQuote, setLoadedAdminQuote] = useState<OpticalQuote | undefined>(undefined);
 
-  // Sync URL path when navigating across all sections
-  const navigateToSection = (section: string) => {
-    setActiveSection(section);
+  // Sync URL path when navigating across all sections (with strict ADM route protection)
+  const navigateToSection = (section: string, notice?: string) => {
+    let targetSection = section;
+
+    if (section === 'admin' && !isAdminAuthenticated) {
+      targetSection = 'admin-login';
+      setPendingAdminRedirect(true);
+      setAdminAccessNotice(
+        notice ||
+          'Acesso restrito: faça login como ADM para acessar o Painel Administrativo (/admin).'
+      );
+    } else if (section === 'admin-login') {
+      setAdminAccessNotice(notice || null);
+    } else {
+      setAdminAccessNotice(null);
+    }
+
+    setActiveSection(targetSection);
     if (typeof window !== 'undefined') {
       const routeMap: Record<string, string> = {
         home: '/',
@@ -76,10 +122,11 @@ export default function App() {
         quotes: '/orcamentos',
         lgpd: '/lgpd',
         admin: '/admin',
+        'admin-login': '/login-adm',
       };
-      const targetPath = routeMap[section] || '/';
+      const targetPath = routeMap[targetSection] || '/';
       if (window.location.pathname !== targetPath) {
-        window.history.pushState({ section }, '', targetPath);
+        window.history.pushState({ section: targetSection }, '', targetPath);
       }
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
@@ -87,11 +134,52 @@ export default function App() {
 
   useEffect(() => {
     const handlePopState = () => {
-      setActiveSection(resolveInitialSection());
+      const requested = resolveInitialSection();
+      if (requested === 'admin' && !isAdminAuthenticated) {
+        setPendingAdminRedirect(true);
+        setAdminAccessNotice(
+          'A rota /admin exige permissão de ADM. Autentique-se abaixo para continuar.'
+        );
+        setActiveSection('admin-login');
+        if (window.location.pathname !== '/login-adm') {
+          window.history.replaceState({ section: 'admin-login' }, '', '/login-adm');
+        }
+        return;
+      }
+      setActiveSection(requested);
     };
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, []);
+  }, [isAdminAuthenticated]);
+
+  const handleAdminAuthenticated = (session: AdminSession, token: string) => {
+    setAdminSession(session);
+    setAdminToken(token);
+    setAdminAccessNotice(null);
+
+    if (pendingAdminRedirect || activeSection === 'admin-login' || activeSection === 'admin') {
+      setPendingAdminRedirect(false);
+      setActiveSection('admin');
+      if (typeof window !== 'undefined' && window.location.pathname !== '/admin') {
+        window.history.pushState({ section: 'admin' }, '', '/admin');
+      }
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
+
+  const handleLogoutAdmin = async () => {
+    await logoutAdmin();
+    setAdminSession(null);
+    setAdminToken(null);
+    setPendingAdminRedirect(false);
+    if (activeSection === 'admin') {
+      setAdminAccessNotice('Sessão administrativa encerrada com segurança.');
+      setActiveSection('admin-login');
+      if (typeof window !== 'undefined') {
+        window.history.pushState({ section: 'admin-login' }, '', '/login-adm');
+      }
+    }
+  };
 
   // When a user selects a frame and lens in the store/catalog
   const handleSelectFrameForQuote = (
@@ -110,6 +198,10 @@ export default function App() {
 
   // When Admin opens a customer quote directly in the Quotes/Billing manager
   const handleOpenAdminQuoteInManager = (quote: OpticalQuote) => {
+    if (!isAdminAuthenticated) {
+      navigateToSection('admin-login', 'Faça login como ADM para editar orçamentos administrativos.');
+      return;
+    }
     setLastSelectedFrame(undefined);
     setLoadedAdminQuote(quote);
     navigateToSection('quotes');
@@ -150,8 +242,10 @@ export default function App() {
         activeSection={activeSection}
         setActiveSection={navigateToSection}
         customerSession={customerSession}
+        adminSession={adminSession}
         onOpenLogin={() => setIsLoginModalOpen(true)}
         onLogout={handleLogoutCustomer}
+        onLogoutAdmin={handleLogoutAdmin}
       />
 
       {/* Main Content Area */}
@@ -191,6 +285,8 @@ export default function App() {
             linkedPrescription={linkedPrescription}
             customerSession={customerSession}
             initialQuote={loadedAdminQuote}
+            isAdmin={isAdminAuthenticated}
+            onRequireAdminLogin={(reason) => navigateToSection('admin-login', reason)}
             onNavigateToPrescription={() => navigateToSection('prescription')}
           />
         )}
@@ -202,12 +298,39 @@ export default function App() {
           />
         )}
 
-        {activeSection === 'admin' && (
-          <AdminFramesPanel
+        {activeSection === 'admin-login' && (
+          <AdminLoginSection
+            adminSession={adminSession}
+            accessNotice={adminAccessNotice}
+            onAuthenticated={handleAdminAuthenticated}
+            onLogoutAdmin={handleLogoutAdmin}
+            onEnterAdminPanel={() => navigateToSection('admin')}
             onNavigateToCatalog={() => navigateToSection('catalog')}
-            onOpenQuoteInManager={handleOpenAdminQuoteInManager}
           />
         )}
+
+        {activeSection === 'admin' &&
+          (isAdminAuthenticated && adminSession && adminToken ? (
+            <AdminFramesPanel
+              adminSession={adminSession}
+              adminToken={adminToken}
+              onLogoutAdmin={handleLogoutAdmin}
+              onNavigateToCatalog={() => navigateToSection('catalog')}
+              onOpenQuoteInManager={handleOpenAdminQuoteInManager}
+            />
+          ) : (
+            <AdminLoginSection
+              adminSession={null}
+              accessNotice={
+                adminAccessNotice ||
+                'Acesso restrito: faça login como ADM para acessar o Painel Administrativo.'
+              }
+              onAuthenticated={handleAdminAuthenticated}
+              onLogoutAdmin={handleLogoutAdmin}
+              onEnterAdminPanel={() => navigateToSection('admin')}
+              onNavigateToCatalog={() => navigateToSection('catalog')}
+            />
+          ))}
       </main>
 
       {/* Passwordless Customer Identification Modal */}
@@ -258,7 +381,7 @@ export default function App() {
 
           <div className="space-y-1.5">
             <h5 className="text-white font-sans font-bold text-xs uppercase tracking-wider mb-2.5">
-              Segurança & Gestão
+              Segurança &amp; Gestão
             </h5>
             <button
               type="button"
@@ -278,17 +401,21 @@ export default function App() {
             </button>
             <button
               type="button"
-              onClick={() => navigateToSection('admin')}
+              onClick={() => navigateToSection(isAdminAuthenticated ? 'admin' : 'admin-login')}
               className="flex items-center gap-1.5 text-[11px] text-slate-400 hover:text-gold-400 cursor-pointer text-left"
             >
               <SlidersHorizontal className="h-3.5 w-3.5 text-slate-400" />
-              <span>Painel Administrativo (/admin)</span>
+              <span>
+                {isAdminAuthenticated
+                  ? 'Painel Administrativo (/admin)'
+                  : 'Acesso Administrativo (Login ADM)'}
+              </span>
             </button>
           </div>
 
           <div>
             <h5 className="text-white font-sans font-bold text-xs uppercase tracking-wider mb-2.5">
-              Localização & Matriz
+              Localização &amp; Matriz
             </h5>
             <p className="flex items-center gap-1.5 text-[11px]">
               <MapPin className="h-3.5 w-3.5 text-gold-500" /> Av. Paulista, 1200 - Bela Vista, São Paulo/SP

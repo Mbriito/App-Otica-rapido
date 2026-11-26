@@ -32,15 +32,16 @@ import {
   History,
   X,
   ArrowUpRight,
+  Lock,
 } from 'lucide-react';
 import LensTreatmentComparison, { LensTreatment, LENS_TREATMENTS } from './LensTreatmentComparison';
-import { premiumFrames } from '../data/frames';
+import { MIN_FRAME_PRICE, premiumFrames } from '../data/frames';
 import {
-  fetchCustomFrames,
+  fetchCatalogFrames,
   fetchPrescriptions,
   fetchQuotes,
   saveQuoteRecord,
-  subscribeToCustomFrames,
+  subscribeToCatalogUpdates,
   subscribeToPrescriptions,
   subscribeToQuotes,
 } from '../services/supabaseService';
@@ -66,22 +67,13 @@ interface QuoteReceiptManagerProps {
   linkedPrescription?: MedicalPrescription;
   customerSession?: CustomerSession | null;
   initialQuote?: OpticalQuote;
+  isAdmin?: boolean;
+  onRequireAdminLogin?: (reason?: string) => void;
   onNavigateToPrescription?: () => void;
 }
 
 const DEFAULT_FRAME: EyewearFrame = {
-  id: 'def-classic-acetate',
-  name: 'Classic Acetate Round',
-  brand: 'Ótica Rapido',
-  price: 350,
-  category: 'grau',
-  gender: 'unissex',
-  shape: 'redondo',
-  material: 'acetato',
-  imageUrl: '',
-  colors: ['Preto Matte', 'Tartaruga'],
-  description: '',
-  rating: 5,
+  ...premiumFrames[0],
 };
 
 function createBlankQuote(
@@ -129,6 +121,8 @@ export default function QuoteReceiptManager({
   linkedPrescription,
   customerSession,
   initialQuote,
+  isAdmin = false,
+  onRequireAdminLogin,
   onNavigateToPrescription,
 }: QuoteReceiptManagerProps) {
   const [activeTab, setActiveTab] = useState<'quote' | 'receipt'>('quote');
@@ -139,6 +133,7 @@ export default function QuoteReceiptManager({
   const [savedQuotes, setSavedQuotes] = useState<OpticalQuote[]>([]);
   const [savedPrescriptions, setSavedPrescriptions] = useState<SavedPrescriptionRecord[]>([]);
   const [customFrames, setCustomFrames] = useState<EyewearFrame[]>([]);
+  const [allFrames, setAllFrames] = useState<EyewearFrame[]>(premiumFrames);
   const [selectedSavedRxId, setSelectedSavedRxId] = useState<string>('');
 
   // Save & copy feedback
@@ -184,18 +179,22 @@ export default function QuoteReceiptManager({
     companyName: 'Ótica Rapido Ltda.',
   });
 
-  const allFrames = useMemo(() => [...customFrames, ...premiumFrames], [customFrames]);
+  const standardFrames = useMemo(
+    () => allFrames.filter((f) => !f.isCustom),
+    [allFrames]
+  );
 
-  // Subscribe to quotes, prescriptions, and custom frames
+  // Subscribe to quotes, prescriptions, and live catalog prices
   useEffect(() => {
     let active = true;
 
-    Promise.all([fetchQuotes(), fetchPrescriptions(), fetchCustomFrames()]).then(
-      ([loadedQuotes, loadedRx, loadedFrames]) => {
+    Promise.all([fetchQuotes(), fetchPrescriptions(), fetchCatalogFrames()]).then(
+      ([loadedQuotes, loadedRx, catalogData]) => {
         if (!active) return;
         setSavedQuotes(loadedQuotes);
         setSavedPrescriptions(loadedRx);
-        setCustomFrames(loadedFrames);
+        setCustomFrames(catalogData.customFrames);
+        setAllFrames(catalogData.allFrames);
       }
     );
 
@@ -205,15 +204,17 @@ export default function QuoteReceiptManager({
     const unsubRx = subscribeToPrescriptions((updated) => {
       if (active) setSavedPrescriptions(updated);
     });
-    const unsubFrames = subscribeToCustomFrames((updated) => {
-      if (active) setCustomFrames(updated);
+    const unsubCatalog = subscribeToCatalogUpdates((catalogData) => {
+      if (!active) return;
+      setCustomFrames(catalogData.customFrames);
+      setAllFrames(catalogData.allFrames);
     });
 
     return () => {
       active = false;
       unsubQuotes();
       unsubRx();
-      unsubFrames();
+      unsubCatalog();
     };
   }, []);
 
@@ -337,6 +338,9 @@ export default function QuoteReceiptManager({
   };
 
   const updateQuoteField = (field: keyof OpticalQuote, value: string | number) => {
+    if (field === 'discount' && !isAdmin) {
+      return;
+    }
     setQuote((prev) => {
       const updated = { ...prev, [field]: value };
       if (field === 'discount') {
@@ -368,6 +372,7 @@ export default function QuoteReceiptManager({
 
   const handleSelectCatalogFrameForItem = (index: number, frameId: string) => {
     if (frameId === 'custom') {
+      if (!isAdmin) return;
       updateQuoteItem(index, (item) => ({
         ...item,
         frame: {
@@ -383,20 +388,28 @@ export default function QuoteReceiptManager({
 
     updateQuoteItem(index, (item) => ({
       ...item,
-      frame: { ...found, price: found.price > 0 ? found.price : item.frame.price || 350 },
+      frame: { ...found, price: Math.max(MIN_FRAME_PRICE, found.price || MIN_FRAME_PRICE) },
       selectedColor: found.colors[0] || item.selectedColor || 'Preto Clássico',
     }));
   };
 
+  useEffect(() => {
+    if (!isAdmin && activeTab === 'receipt') {
+      setActiveTab('quote');
+    }
+  }, [isAdmin, activeTab]);
+
   const handleAddQuoteItem = () => {
+    const baseFrame = allFrames[0] || DEFAULT_FRAME;
     setQuote((prev) => {
       const nextItem: SelectedItem = {
         frame: {
-          ...DEFAULT_FRAME,
-          id: `item-${Date.now()}`,
-          price: isQuoteWithFrame(prev) ? 350 : 0,
+          ...baseFrame,
+          price: isQuoteWithFrame(prev)
+            ? Math.max(MIN_FRAME_PRICE, baseFrame.price || MIN_FRAME_PRICE)
+            : 0,
         },
-        selectedColor: 'Preto Clássico',
+        selectedColor: baseFrame.colors[0] || 'Preto Clássico',
         lensType: 'Lente Monofocal Orgânica + Antirreflexo Premium',
         lensPrice: 220,
       };
@@ -754,15 +767,23 @@ export default function QuoteReceiptManager({
             </button>
             <button
               type="button"
-              onClick={() => setActiveTab('receipt')}
+              onClick={() => {
+                if (!isAdmin) {
+                  onRequireAdminLogin?.(
+                    'A emissão de Recibos de Pagamento é restrita ao Administrador (ADM) autenticado.'
+                  );
+                  return;
+                }
+                setActiveTab('receipt');
+              }}
               className={`px-4 py-2 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
                 activeTab === 'receipt'
                   ? 'bg-slate-950 text-gold-400 shadow-xs'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              <Receipt className="h-3.5 w-3.5" />
-              Recibos
+              {isAdmin ? <Receipt className="h-3.5 w-3.5" /> : <Lock className="h-3.5 w-3.5 text-amber-600" />}
+              Recibos {!isAdmin && '(ADM)'}
             </button>
           </div>
 
@@ -1038,34 +1059,38 @@ export default function QuoteReceiptManager({
                         <div className="space-y-2 pb-2.5 border-b border-slate-200/80">
                           <div>
                             <label className="block text-[10px] text-slate-500 font-semibold mb-1">
-                              Armação do Catálogo (ou Avulsa)
+                              {isAdmin ? 'Armação do Catálogo (ou Avulsa)' : 'Armação do Catálogo Oficial'}
                             </label>
                             <select
                               value={
                                 allFrames.some((f) => f.id === item.frame.id)
                                   ? item.frame.id
-                                  : 'custom'
+                                  : isAdmin
+                                    ? 'custom'
+                                    : allFrames[0]?.id || ''
                               }
                               onChange={(e) =>
                                 handleSelectCatalogFrameForItem(idx, e.target.value)
                               }
                               className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-gold-500 outline-none"
                             >
-                              <option value="custom">Armação Personalizada / Avulsa</option>
+                              {isAdmin && (
+                                <option value="custom">Armação Personalizada / Avulsa (ADM)</option>
+                              )}
                               {customFrames.length > 0 && (
-                                <optgroup label="Armações Cadastradas">
+                                <optgroup label="Armações Exclusivas">
                                   {customFrames.map((f) => (
                                     <option key={f.id} value={f.id}>
-                                      {f.name} ({f.brand}){' '}
-                                      {f.price > 0 ? `— ${formatBRL(f.price)}` : ''}
+                                      {f.name} ({f.brand}) — {formatBRL(f.price)}
                                     </option>
                                   ))}
                                 </optgroup>
                               )}
                               <optgroup label="Catálogo Ótica Rapido">
-                                {premiumFrames.map((f) => (
+                                {standardFrames.map((f) => (
                                   <option key={f.id} value={f.id}>
-                                    {f.name}
+                                    {f.referenceCode ? `${f.referenceCode} · ` : ''}
+                                    {f.name} — {formatBRL(f.price)}
                                   </option>
                                 ))}
                               </optgroup>
@@ -1079,35 +1104,48 @@ export default function QuoteReceiptManager({
                               </label>
                               <input
                                 type="text"
+                                readOnly={!isAdmin}
                                 value={item.frame.name}
-                                onChange={(e) =>
+                                onChange={(e) => {
+                                  if (!isAdmin) return;
                                   updateQuoteItem(idx, (cur) => ({
                                     ...cur,
                                     frame: { ...cur.frame, name: e.target.value },
-                                  }))
-                                }
-                                className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-gold-500 outline-none"
+                                  }));
+                                }}
+                                className={`w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs outline-none ${
+                                  isAdmin
+                                    ? 'bg-white focus:ring-2 focus:ring-gold-500'
+                                    : 'bg-slate-100 text-slate-600 cursor-not-allowed'
+                                }`}
                               />
                             </div>
                             <div className="col-span-5">
-                              <label className="block text-[10px] text-slate-500 mb-0.5">
-                                Valor Armação (R$)
+                              <label className="block text-[10px] text-slate-500 mb-0.5 flex items-center justify-between">
+                                <span>Valor Armação (R$)</span>
+                                {!isAdmin && <Lock className="h-2.5 w-2.5 text-slate-400" />}
                               </label>
                               <input
                                 type="number"
-                                min="0"
+                                min={MIN_FRAME_PRICE}
                                 step="0.01"
+                                readOnly={!isAdmin}
                                 value={item.frame.price}
-                                onChange={(e) =>
+                                onChange={(e) => {
+                                  if (!isAdmin) return;
                                   updateQuoteItem(idx, (cur) => ({
                                     ...cur,
                                     frame: {
                                       ...cur.frame,
                                       price: Math.max(0, parseFloat(e.target.value) || 0),
                                     },
-                                  }))
-                                }
-                                className="w-full text-right px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-mono tabular-nums focus:ring-2 focus:ring-gold-500 outline-none"
+                                  }));
+                                }}
+                                className={`w-full text-right px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-mono tabular-nums outline-none ${
+                                  isAdmin
+                                    ? 'bg-white focus:ring-2 focus:ring-gold-500'
+                                    : 'bg-slate-100 text-slate-700 font-bold cursor-not-allowed'
+                                }`}
                               />
                             </div>
                           </div>
@@ -1125,35 +1163,54 @@ export default function QuoteReceiptManager({
                           </label>
                           <input
                             type="text"
+                            readOnly={!isAdmin}
                             value={item.lensType}
-                            onChange={(e) =>
+                            onChange={(e) => {
+                              if (!isAdmin) return;
                               updateQuoteItem(idx, (cur) => ({
                                 ...cur,
                                 lensType: e.target.value,
-                              }))
-                            }
-                            className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-gold-500 outline-none"
+                              }));
+                            }}
+                            className={`w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs outline-none ${
+                              isAdmin
+                                ? 'bg-white focus:ring-2 focus:ring-gold-500'
+                                : 'bg-slate-100 text-slate-600 cursor-not-allowed'
+                            }`}
                           />
                         </div>
                         <div className="col-span-5">
-                          <label className="block text-[10px] text-slate-500 mb-0.5">
-                            Valor Lentes (R$)
+                          <label className="block text-[10px] text-slate-500 mb-0.5 flex items-center justify-between">
+                            <span>Valor Lentes (R$)</span>
+                            {!isAdmin && <Lock className="h-2.5 w-2.5 text-slate-400" />}
                           </label>
                           <input
                             type="number"
                             min="0"
                             step="0.01"
+                            readOnly={!isAdmin}
                             value={item.lensPrice}
-                            onChange={(e) =>
+                            onChange={(e) => {
+                              if (!isAdmin) return;
                               updateQuoteItem(idx, (cur) => ({
                                 ...cur,
                                 lensPrice: Math.max(0, parseFloat(e.target.value) || 0),
-                              }))
-                            }
-                            className="w-full text-right px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-mono tabular-nums focus:ring-2 focus:ring-gold-500 outline-none"
+                              }));
+                            }}
+                            className={`w-full text-right px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-mono tabular-nums outline-none ${
+                              isAdmin
+                                ? 'bg-white focus:ring-2 focus:ring-gold-500'
+                                : 'bg-slate-100 text-slate-700 font-bold cursor-not-allowed'
+                            }`}
                           />
                         </div>
                       </div>
+                      {!isAdmin && (
+                        <p className="text-[10px] text-slate-500 flex items-center gap-1">
+                          <Lock className="h-3 w-3 text-slate-400 flex-shrink-0" />
+                          Valores tabelados pela Ótica Rapido. Escolha a armação e o tratamento desejado abaixo.
+                        </p>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -1214,29 +1271,37 @@ export default function QuoteReceiptManager({
                   <div className="grid grid-cols-2 gap-3">
                     <div>
                       <div className="flex items-center justify-between mb-1">
-                        <label className="text-[10px] uppercase font-mono tracking-wider text-slate-400">
-                          Desconto (R$)
+                        <label className="text-[10px] uppercase font-mono tracking-wider text-slate-400 flex items-center gap-1">
+                          <span>Desconto (R$)</span>
+                          {!isAdmin && <Lock className="h-2.5 w-2.5" />}
                         </label>
-                        <div className="flex items-center gap-1">
-                          {[0, 50, 100].map((preset) => (
-                            <button
-                              key={preset}
-                              type="button"
-                              onClick={() => updateQuoteField('discount', preset)}
-                              className="px-1.5 py-0.5 text-[10px] font-mono bg-slate-100 hover:bg-slate-200 text-slate-600 rounded cursor-pointer"
-                            >
-                              {preset === 0 ? '0' : `-${preset}`}
-                            </button>
-                          ))}
-                        </div>
+                        {isAdmin && (
+                          <div className="flex items-center gap-1">
+                            {[0, 50, 100].map((preset) => (
+                              <button
+                                key={preset}
+                                type="button"
+                                onClick={() => updateQuoteField('discount', preset)}
+                                className="px-1.5 py-0.5 text-[10px] font-mono bg-slate-100 hover:bg-slate-200 text-slate-600 rounded cursor-pointer"
+                              >
+                                {preset === 0 ? '0' : `-${preset}`}
+                              </button>
+                            ))}
+                          </div>
+                        )}
                       </div>
                       <input
                         type="number"
                         min="0"
                         step="0.01"
+                        readOnly={!isAdmin}
                         value={quote.discount}
                         onChange={(e) => updateQuoteField('discount', e.target.value)}
-                        className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-mono tabular-nums focus:ring-2 focus:ring-gold-500 outline-none"
+                        className={`w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-mono tabular-nums outline-none ${
+                          isAdmin
+                            ? 'bg-white focus:ring-2 focus:ring-gold-500'
+                            : 'bg-slate-100 text-slate-500 cursor-not-allowed'
+                        }`}
                       />
                     </div>
                     <div>
