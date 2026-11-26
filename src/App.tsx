@@ -94,6 +94,7 @@ export default function App() {
     undefined
   );
   const [loadedAdminQuote, setLoadedAdminQuote] = useState<OpticalQuote | undefined>(undefined);
+  const [newQuoteRequestId, setNewQuoteRequestId] = useState<number>(0);
 
   // Sync URL path when navigating across all sections (with strict ADM route protection)
   const navigateToSection = (section: string, notice?: string) => {
@@ -207,8 +208,21 @@ export default function App() {
     navigateToSection('quotes');
   };
 
-  // When a user uploads or saves a medical prescription recipe
+  // When Admin starts a brand-new quote from /admin -> centralized QuoteReceiptManager
+  const handleCreateNewAdminQuoteInManager = () => {
+    if (!isAdminAuthenticated) {
+      navigateToSection('admin-login', 'Faça login como ADM para criar orçamentos administrativos.');
+      return;
+    }
+    setLastSelectedFrame(undefined);
+    setLoadedAdminQuote(undefined);
+    setNewQuoteRequestId((prev) => prev + 1);
+    navigateToSection('quotes');
+  };
+
+  // When a user uploads or saves a medical prescription and chooses to use it in Quotes
   const handlePrescriptionAdded = (prescription: MedicalPrescription) => {
+    setLoadedAdminQuote(undefined);
     setLinkedPrescription(prescription);
     navigateToSection('quotes');
   };
@@ -262,6 +276,7 @@ export default function App() {
         {activeSection === 'prescription' && (
           <PrescriptionUpload
             onPrescriptionAdded={handlePrescriptionAdded}
+            onPrescriptionSaved={(rx) => setLinkedPrescription(rx)}
             customerSession={customerSession}
             onRequestLogin={() => setIsLoginModalOpen(true)}
             onOpenLgpdPolicy={() => navigateToSection('lgpd')}
@@ -285,9 +300,11 @@ export default function App() {
             linkedPrescription={linkedPrescription}
             customerSession={customerSession}
             initialQuote={loadedAdminQuote}
+            newQuoteRequestId={newQuoteRequestId}
             isAdmin={isAdminAuthenticated}
             onRequireAdminLogin={(reason) => navigateToSection('admin-login', reason)}
             onNavigateToPrescription={() => navigateToSection('prescription')}
+            onBackToAdmin={isAdminAuthenticated ? () => navigateToSection('admin') : undefined}
           />
         )}
 
@@ -317,6 +334,7 @@ export default function App() {
               onLogoutAdmin={handleLogoutAdmin}
               onNavigateToCatalog={() => navigateToSection('catalog')}
               onOpenQuoteInManager={handleOpenAdminQuoteInManager}
+              onCreateNewQuoteInManager={handleCreateNewAdminQuoteInManager}
             />
           ) : (
             <AdminLoginSection

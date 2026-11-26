@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 
 const ALLOWED_MIME_TYPES = new Set([
   'image/jpeg',
@@ -9,6 +9,8 @@ const ALLOWED_MIME_TYPES = new Set([
   'application/pdf',
 ]);
 
+const PRIMARY_PRESCRIPTION_MODEL = 'gemini-4-hydrogen';
+const FALLBACK_PRESCRIPTION_MODEL = 'gemini-2.5-flash';
 const MAX_BASE64_LENGTH = 14 * 1024 * 1024; // ~10MB decoded file
 
 function createGeminiClient(): GoogleGenAI | null {
@@ -48,6 +50,37 @@ function parseJsonResponseText(rawText: string): Record<string, unknown> | null 
   return null;
 }
 
+function asCleanString(value: unknown, fallback = ''): string {
+  if (typeof value === 'string') return value.trim();
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return fallback;
+}
+
+function normalizeEyeData(rawEye: unknown) {
+  const eye = (rawEye && typeof rawEye === 'object' ? rawEye : {}) as Record<string, unknown>;
+  return {
+    spherical: asCleanString(eye.spherical, '0.00').replace(',', '.') || '0.00',
+    cylindrical: asCleanString(eye.cylindrical, '0.00').replace(',', '.') || '0.00',
+    axis: asCleanString(eye.axis, '0').replace(/\D/g, '').slice(0, 3) || '0',
+    dnp: asCleanString(eye.dnp, ''),
+    addition: asCleanString(eye.addition, '').replace(',', '.'),
+  };
+}
+
+function normalizeExtractedPayload(parsed: Record<string, unknown>): Record<string, unknown> {
+  return {
+    isValidPrescription: Boolean(parsed.isValidPrescription),
+    patientName: asCleanString(parsed.patientName, ''),
+    doctorName: asCleanString(parsed.doctorName, ''),
+    doctorCrm: asCleanString(parsed.doctorCrm, ''),
+    date: asCleanString(parsed.date, ''),
+    od: normalizeEyeData(parsed.od),
+    oe: normalizeEyeData(parsed.oe),
+    observation: asCleanString(parsed.observation, ''),
+    confidenceNote: asCleanString(parsed.confidenceNote, ''),
+  };
+}
+
 export async function processPrescriptionRead(rawBody: unknown): Promise<{
   status: number;
   payload: Record<string, unknown>;
@@ -84,12 +117,12 @@ export async function processPrescriptionRead(rawBody: unknown): Promise<{
       ? fileBase64.slice(fileBase64.indexOf(',') + 1).replace(/\s+/g, '')
       : fileBase64.replace(/\s+/g, '');
 
-    if (!cleanBase64 || !/^[A-Za-z0-9+/=]+$/.test(cleanBase64)) {
+    if (!cleanBase64 || cleanBase64.length < 16 || !/^[A-Za-z0-9+/=]+$/.test(cleanBase64)) {
       return {
         status: 400,
         payload: {
           error:
-            'O conteúdo do arquivo enviado está corrompido ou inválido. Tente enviar a imagem novamente.',
+            'O conteúdo do arquivo enviado está vazio ou corrompido. Tente selecionar a imagem ou PDF novamente.',
         },
       };
     }
@@ -109,7 +142,7 @@ export async function processPrescriptionRead(rawBody: unknown): Promise<{
         status: 503,
         payload: {
           error:
-            'Serviço de leitura óptica indisponível: configure a chave GEMINI_API_KEY nas variáveis de ambiente.',
+            'Serviço de leitura automática indisponível no momento (GEMINI_API_KEY não configurada). Você pode preencher os graus manualmente ao lado e salvar normalmente.',
         },
       };
     }
@@ -152,9 +185,10 @@ Regras estritas de extração:
       required: ['spherical', 'cylindrical', 'axis', 'dnp', 'addition'],
     };
 
-    const configuredModel = process.env.GEMINI_PRESCRIPTION_MODEL?.trim() || 'gemini-2.5-flash';
+    const configuredModel =
+      process.env.GEMINI_PRESCRIPTION_MODEL?.trim() || PRIMARY_PRESCRIPTION_MODEL;
 
-    const callModel = (modelName: string) =>
+    const callModel = (modelName: string, useThinkingConfig: boolean) =>
       ai.models.generateContent({
         model: modelName,
         contents: {
@@ -172,6 +206,9 @@ Regras estritas de extração:
         },
         config: {
           systemInstruction,
+          ...(useThinkingConfig
+            ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+            : {}),
           responseMimeType: 'application/json',
           responseSchema: {
             type: Type.OBJECT,
@@ -224,15 +261,24 @@ Regras estritas de extração:
         },
       });
 
+    const supportsThinking = configuredModel.includes('gemini-4') || configuredModel.includes('gemini-3');
+
     let response;
     try {
-      response = await callModel(configuredModel);
+      response = await callModel(configuredModel, supportsThinking);
     } catch (firstErr: unknown) {
-      const errObj = firstErr as { status?: number; code?: number };
+      const errObj = firstErr as { status?: number; code?: number; message?: string };
       const status = Number(errObj?.status || errObj?.code);
-      if (status >= 500 || !status) {
-        await new Promise((r) => setTimeout(r, 800));
-        response = await callModel(configuredModel);
+      const msg = String(errObj?.message || '');
+
+      if (
+        (status === 404 || msg.includes('NOT_FOUND')) &&
+        configuredModel !== FALLBACK_PRESCRIPTION_MODEL
+      ) {
+        response = await callModel(FALLBACK_PRESCRIPTION_MODEL, false);
+      } else if (status >= 500 || !status) {
+        await new Promise((r) => setTimeout(r, 700));
+        response = await callModel(configuredModel, supportsThinking);
       } else {
         throw firstErr;
       }
@@ -245,12 +291,12 @@ Regras estritas de extração:
         status: 502,
         payload: {
           error:
-            'Não foi possível interpretar o retorno da leitura. Tente enviar uma foto mais nítida.',
+            'Não foi possível interpretar o retorno da leitura. Tente enviar uma foto mais nítida ou preencha os campos manualmente.',
         },
       };
     }
 
-    return { status: 200, payload: parsed };
+    return { status: 200, payload: normalizeExtractedPayload(parsed) };
   } catch (err: unknown) {
     const errObj = err as { message?: string; status?: number; code?: number };
     const msg = String(errObj?.message || '');
@@ -290,7 +336,7 @@ Regras estritas de extração:
       status: 500,
       payload: {
         error:
-          'Erro ao processar a leitura da receita. Verifique se a imagem está nítida e tente novamente.',
+          'Erro ao processar a leitura da receita. Verifique se a imagem está nítida ou preencha os dados manualmente ao lado.',
       },
     };
   }

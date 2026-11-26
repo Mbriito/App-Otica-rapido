@@ -41,6 +41,7 @@ interface AdminFramesPanelProps {
   onLogoutAdmin: () => void;
   onNavigateToCatalog: () => void;
   onOpenQuoteInManager: (quote: OpticalQuote) => void;
+  onCreateNewQuoteInManager: () => void;
 }
 
 const FACE_SHAPES_OPTIONS = [
@@ -69,6 +70,7 @@ export default function AdminFramesPanel({
   onLogoutAdmin,
   onNavigateToCatalog,
   onOpenQuoteInManager,
+  onCreateNewQuoteInManager,
 }: AdminFramesPanelProps) {
   const [adminTab, setAdminTab] = useState<'quotes' | 'prices' | 'frames'>('prices');
   const [quotesCount, setQuotesCount] = useState<number>(0);
@@ -662,10 +664,9 @@ export default function AdminFramesPanel({
       {/* TAB 2: ORÇAMENTOS DE CLIENTES */}
       {adminTab === 'quotes' && (
         <AdminCustomerQuotes
-          customFrames={customFrames}
-          catalogFrames={allFrames}
           adminToken={adminToken}
           onOpenQuoteInManager={onOpenQuoteInManager}
+          onCreateNewQuoteInManager={onCreateNewQuoteInManager}
           onQuotesCountChange={setQuotesCount}
         />
       )}

@@ -6,7 +6,7 @@ import FaceShapeGuide from './FaceShapeGuide';
 import OpticalImage from './OpticalImage';
 import catalogEyewearHero from '../assets/images/catalog_eyewear_hero_1795637102870.jpg';
 import { fetchCatalogFrames, subscribeToCatalogUpdates } from '../services/supabaseService';
-import { formatBRL } from '../utils/quoteUtils';
+import { CATALOG_LENS_OPTIONS, formatBRL } from '../utils/quoteUtils';
 
 interface CatalogProps {
   onSelectFrameForQuote: (frame: EyewearFrame, color: string, lensType: string, lensPrice: number) => void;
@@ -22,8 +22,8 @@ export default function Catalog({ onSelectFrameForQuote, onNavigateToPrescriptio
   const [selectedFrame, setSelectedFrame] = useState<EyewearFrame | null>(null);
   const [chosenColor, setChosenColor] = useState<string>('');
   const [chosenLens, setChosenLens] = useState<{ name: string; price: number }>({
-    name: 'Somente Armação (Lente de Demonstração)',
-    price: 0
+    name: CATALOG_LENS_OPTIONS[0].name,
+    price: CATALOG_LENS_OPTIONS[0].price,
   });
 
   useEffect(() => {
@@ -47,14 +47,7 @@ export default function Catalog({ onSelectFrameForQuote, onNavigateToPrescriptio
     };
   }, []);
 
-  // Opções de Lentes para orçamentação
-  const lensOptions = [
-    { name: 'Somente Armação (Lente de Demonstração)', price: 0, desc: 'Sem grau oftálmico, para uso estético ou com lentes a definir na visita.' },
-    { name: 'Monofocal Orgânica + Antirreflexo', price: 145.00, desc: 'Ideal para Miopia, Hipermetropia ou Astigmatismo leve/médio.' },
-    { name: 'Monofocal BlueCut Digital (Filtro Luz Azul)', price: 290.00, desc: 'Ideal para quem usa telas e computadores, reduz o cansaço ocular.' },
-    { name: 'Multifocal Progressiva Digital de Alta Precisão', price: 480.00, desc: 'Para presbiopia (visão de perto, intermediária e longe) com campo amplo.' },
-    { name: 'Fotossensível (Transitions) com Bloqueio UV400', price: 390.00, desc: 'Lentes inteligentes que clareiam em ambientes fechados e escurecem no sol.' }
-  ];
+  const lensOptions = CATALOG_LENS_OPTIONS;
 
   // Filtering logic
   const filteredFrames = allFrames.filter((frame) => {
@@ -68,7 +61,10 @@ export default function Catalog({ onSelectFrameForQuote, onNavigateToPrescriptio
   const handleFrameClick = (frame: EyewearFrame) => {
     setSelectedFrame(frame);
     setChosenColor(frame.colors[0] || 'Preto Clássico');
-    setChosenLens({ name: 'Somente Armação (Lente de Demonstração)', price: 0 });
+    setChosenLens({
+      name: CATALOG_LENS_OPTIONS[0].name,
+      price: CATALOG_LENS_OPTIONS[0].price,
+    });
   };
 
   const handleSendToQuote = () => {
@@ -542,10 +538,10 @@ export default function Catalog({ onSelectFrameForQuote, onNavigateToPrescriptio
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <button
                     onClick={handleSendToQuote}
-                    className="w-full py-3 border border-slate-900 hover:bg-slate-50 text-slate-900 font-sans text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer"
+                    className="w-full py-3 bg-slate-900 hover:bg-slate-800 text-gold-400 font-sans text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-2 shadow-md cursor-pointer"
                   >
                     <ShoppingCart className="h-3.5 w-3.5" />
-                    Adicionar no Orçamento
+                    Montar Orçamento com Este Modelo
                   </button>
                   <a
                     href={getWhatsAppMessageUrl(selectedFrame, chosenColor, chosenLens.name)}

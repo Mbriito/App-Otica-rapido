@@ -32,6 +32,8 @@ import {
   History,
   X,
   ArrowUpRight,
+  ArrowLeft,
+  User,
   Lock,
 } from 'lucide-react';
 import LensTreatmentComparison, { LensTreatment, LENS_TREATMENTS } from './LensTreatmentComparison';
@@ -40,6 +42,7 @@ import {
   fetchCatalogFrames,
   fetchPrescriptions,
   fetchQuotes,
+  fetchRegisteredCustomers,
   saveQuoteRecord,
   subscribeToCatalogUpdates,
   subscribeToPrescriptions,
@@ -55,6 +58,7 @@ import {
   getDefaultValidUntil,
   getEffectivePrescription,
   getQuoteModalityLabel,
+  inferTreatmentIdFromLensType,
   isQuoteWithFrame,
   STORE_WHATSAPP_NUMBER,
 } from '../utils/quoteUtils';
@@ -67,9 +71,11 @@ interface QuoteReceiptManagerProps {
   linkedPrescription?: MedicalPrescription;
   customerSession?: CustomerSession | null;
   initialQuote?: OpticalQuote;
+  newQuoteRequestId?: number;
   isAdmin?: boolean;
   onRequireAdminLogin?: (reason?: string) => void;
   onNavigateToPrescription?: () => void;
+  onBackToAdmin?: () => void;
 }
 
 const DEFAULT_FRAME: EyewearFrame = {
@@ -78,12 +84,13 @@ const DEFAULT_FRAME: EyewearFrame = {
 
 function createBlankQuote(
   customerSession?: CustomerSession | null,
-  prescription?: MedicalPrescription
+  prescription?: MedicalPrescription,
+  isAdmin = false
 ): OpticalQuote {
   const defaultItem: SelectedItem = {
     frame: { ...DEFAULT_FRAME },
     selectedColor: DEFAULT_FRAME.colors[0],
-    lensType: 'Lente Monofocal Orgânica + Filtro Azul (Blue UV)',
+    lensType: 'Lente Monofocal Orgânica + Filtro Azul (Blue UV / BlueCut)',
     lensPrice: 290,
     prescription,
   };
@@ -93,10 +100,10 @@ function createBlankQuote(
     quoteNumber: createQuoteNumber(),
     date: new Date().toISOString().split('T')[0],
     validUntil: getDefaultValidUntil(15),
-    customerId: customerSession?.id,
-    customerName: customerSession?.fullName || prescription?.patientName || '',
-    customerPhone: customerSession?.phone || '',
-    customerEmail: customerSession?.email || '',
+    customerId: isAdmin ? undefined : customerSession?.id,
+    customerName: isAdmin ? prescription?.patientName || '' : customerSession?.fullName || prescription?.patientName || '',
+    customerPhone: isAdmin ? '' : customerSession?.phone || '',
+    customerEmail: isAdmin ? '' : customerSession?.email || '',
     customerCpf: '',
     includeFrame: true,
     prescription,
@@ -107,9 +114,9 @@ function createBlankQuote(
     paymentMethod: 'Cartão de Crédito - 10x sem juros',
     observations:
       'Orçamento inclui garantia de 1 ano para lentes e ajustes gratuitos na unidade Paulista ou a domicílio.',
-    sellerName: 'Consultoria Ótica Rapido',
+    sellerName: isAdmin ? 'Administrador - Ótica Rapido' : 'Consultoria Ótica Rapido',
     status: 'rascunho',
-    createdBy: 'cliente',
+    createdBy: isAdmin ? 'admin' : 'cliente',
   };
 }
 
@@ -121,9 +128,11 @@ export default function QuoteReceiptManager({
   linkedPrescription,
   customerSession,
   initialQuote,
+  newQuoteRequestId = 0,
   isAdmin = false,
   onRequireAdminLogin,
   onNavigateToPrescription,
+  onBackToAdmin,
 }: QuoteReceiptManagerProps) {
   const [activeTab, setActiveTab] = useState<'quote' | 'receipt'>('quote');
   const [selectedTreatmentId, setSelectedTreatmentId] = useState<string>('filtro_azul');
@@ -132,6 +141,8 @@ export default function QuoteReceiptManager({
   // Live synced lists
   const [savedQuotes, setSavedQuotes] = useState<OpticalQuote[]>([]);
   const [savedPrescriptions, setSavedPrescriptions] = useState<SavedPrescriptionRecord[]>([]);
+  const [registeredCustomers, setRegisteredCustomers] = useState<CustomerSession[]>([]);
+  const [selectedRegisteredCustomerId, setSelectedRegisteredCustomerId] = useState<string>('');
   const [customFrames, setCustomFrames] = useState<EyewearFrame[]>([]);
   const [allFrames, setAllFrames] = useState<EyewearFrame[]>(premiumFrames);
   const [selectedSavedRxId, setSelectedSavedRxId] = useState<string>('');
@@ -158,7 +169,7 @@ export default function QuoteReceiptManager({
 
   // Quote state
   const [quote, setQuote] = useState<OpticalQuote>(() =>
-    createBlankQuote(customerSession, linkedPrescription)
+    createBlankQuote(customerSession, linkedPrescription, isAdmin)
   );
 
   // Receipt state
@@ -188,15 +199,19 @@ export default function QuoteReceiptManager({
   useEffect(() => {
     let active = true;
 
-    Promise.all([fetchQuotes(), fetchPrescriptions(), fetchCatalogFrames()]).then(
-      ([loadedQuotes, loadedRx, catalogData]) => {
-        if (!active) return;
-        setSavedQuotes(loadedQuotes);
-        setSavedPrescriptions(loadedRx);
-        setCustomFrames(catalogData.customFrames);
-        setAllFrames(catalogData.allFrames);
-      }
-    );
+    Promise.all([
+      fetchQuotes(),
+      fetchPrescriptions(),
+      fetchCatalogFrames(),
+      isAdmin ? fetchRegisteredCustomers() : Promise.resolve([]),
+    ]).then(([loadedQuotes, loadedRx, catalogData, loadedCustomers]) => {
+      if (!active) return;
+      setSavedQuotes(loadedQuotes);
+      setSavedPrescriptions(loadedRx);
+      setCustomFrames(catalogData.customFrames);
+      setAllFrames(catalogData.allFrames);
+      setRegisteredCustomers(loadedCustomers);
+    });
 
     const unsubQuotes = subscribeToQuotes((updated) => {
       if (active) setSavedQuotes(updated);
@@ -216,7 +231,18 @@ export default function QuoteReceiptManager({
       unsubRx();
       unsubCatalog();
     };
-  }, []);
+  }, [isAdmin]);
+
+  // Reset to a fresh quote when ADM triggers "+ Novo Orçamento" from /admin
+  useEffect(() => {
+    if (!newQuoteRequestId) return;
+    setQuote(createBlankQuote(customerSession, linkedPrescription, isAdmin));
+    setSelectedTreatmentId('filtro_azul');
+    setSelectedSavedRxId('');
+    setSelectedRegisteredCustomerId('');
+    setActiveTab('quote');
+    setSaveFeedback(null);
+  }, [newQuoteRequestId, customerSession, linkedPrescription, isAdmin]);
 
   // Load quote passed directly from the Admin Panel (/admin)
   useEffect(() => {
@@ -235,20 +261,30 @@ export default function QuoteReceiptManager({
       discount: totals.discount,
       total: totals.total,
     });
+    setSelectedTreatmentId(inferTreatmentIdFromLensType(clonedItems[0]?.lensType));
     setActiveTab('quote');
     setSaveFeedback(null);
   }, [initialQuote]);
 
-  // Load selected frame from Catalog
+  // Load selected frame from Catalog (preserving linked prescription & exact catalog lens price including R$ 0)
   useEffect(() => {
     if (!lastSelectedFrame) return;
+    const resolvedLensType =
+      selectedLensType || 'Lente Monofocal Orgânica + Filtro Azul (Blue UV / BlueCut)';
+    const resolvedLensPrice = selectedLensType
+      ? Math.max(0, Number(selectedLensPrice) || 0)
+      : 290;
+
     setQuote((prev) => {
       const rx = prev.prescription || linkedPrescription;
       const newItem: SelectedItem = {
-        frame: { ...lastSelectedFrame },
+        frame: {
+          ...lastSelectedFrame,
+          price: Math.max(MIN_FRAME_PRICE, Number(lastSelectedFrame.price) || MIN_FRAME_PRICE),
+        },
         selectedColor: selectedColor || lastSelectedFrame.colors[0] || 'Preto Clássico',
-        lensType: selectedLensType || 'Lente Monofocal Orgânica + Filtro Azul (Blue UV)',
-        lensPrice: selectedLensPrice || 290,
+        lensType: resolvedLensType,
+        lensPrice: resolvedLensPrice,
         prescription: rx,
       };
       const totals = calculateQuoteTotals([newItem], prev.discount, true);
@@ -262,6 +298,7 @@ export default function QuoteReceiptManager({
         total: totals.total,
       };
     });
+    setSelectedTreatmentId(inferTreatmentIdFromLensType(resolvedLensType));
     setActiveTab('quote');
   }, [lastSelectedFrame, selectedColor, selectedLensType, selectedLensPrice, linkedPrescription]);
 
@@ -410,8 +447,8 @@ export default function QuoteReceiptManager({
             : 0,
         },
         selectedColor: baseFrame.colors[0] || 'Preto Clássico',
-        lensType: 'Lente Monofocal Orgânica + Antirreflexo Premium',
-        lensPrice: 220,
+        lensType: 'Lente Monofocal Orgânica + Antirreflexo (AR)',
+        lensPrice: 145,
       };
       const items = [...prev.items, nextItem];
       const totals = calculateQuoteTotals(items, prev.discount, isQuoteWithFrame(prev));
@@ -478,14 +515,31 @@ export default function QuoteReceiptManager({
       discount: totals.discount,
       total: totals.total,
     });
+    setSelectedTreatmentId(inferTreatmentIdFromLensType(clonedItems[0]?.lensType));
     setActiveTab('quote');
     setSaveFeedback(null);
   };
 
   const handleNewQuote = () => {
-    setQuote(createBlankQuote(customerSession, linkedPrescription));
+    setQuote(createBlankQuote(customerSession, linkedPrescription, isAdmin));
+    setSelectedTreatmentId('filtro_azul');
     setSelectedSavedRxId('');
+    setSelectedRegisteredCustomerId('');
     setSaveFeedback(null);
+  };
+
+  const handleSelectRegisteredCustomer = (customerId: string) => {
+    setSelectedRegisteredCustomerId(customerId);
+    if (!customerId) return;
+    const found = registeredCustomers.find((c) => c.id === customerId);
+    if (!found) return;
+    setQuote((prev) => ({
+      ...prev,
+      customerId: found.id,
+      customerName: found.fullName || prev.customerName,
+      customerPhone: found.phone || prev.customerPhone,
+      customerEmail: found.email || prev.customerEmail,
+    }));
   };
 
   const handleSelectTreatment = (treatment: LensTreatment) => {
@@ -563,7 +617,7 @@ export default function QuoteReceiptManager({
         subtotal: totals.subtotal,
         discount: totals.discount,
         total: totals.total,
-        createdBy: quote.createdBy || 'cliente',
+        createdBy: isAdmin ? 'admin' : quote.createdBy || 'cliente',
         status: quote.status || 'rascunho',
       });
 
@@ -797,6 +851,17 @@ export default function QuoteReceiptManager({
               Novo Orçamento
             </button>
           )}
+
+          {isAdmin && onBackToAdmin && (
+            <button
+              type="button"
+              onClick={onBackToAdmin}
+              className="px-3 py-2 text-xs font-semibold text-gold-800 bg-gold-50 hover:bg-gold-100 border border-gold-200 rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+            >
+              <ArrowLeft className="h-3.5 w-3.5" />
+              Painel ADM
+            </button>
+          )}
         </div>
 
         {/* Saved Quotes Quick Reopen */}
@@ -884,6 +949,27 @@ export default function QuoteReceiptManager({
 
                 {/* 2. DADOS DO CLIENTE & VALIDADE */}
                 <div className="space-y-3 pt-3 border-t border-slate-100">
+                  {isAdmin && registeredCustomers.length > 0 && (
+                    <div>
+                      <label className="block text-[10px] uppercase font-mono tracking-wider text-gold-700 font-bold mb-1 flex items-center gap-1">
+                        <User className="h-3 w-3" />
+                        Puxar Cliente Cadastrado (ADM)
+                      </label>
+                      <select
+                        value={selectedRegisteredCustomerId}
+                        onChange={(e) => handleSelectRegisteredCustomer(e.target.value)}
+                        className="w-full px-3 py-2 border border-gold-200 rounded-lg text-xs bg-gold-50/50 text-slate-800 focus:ring-2 focus:ring-gold-500 outline-none"
+                      >
+                        <option value="">Selecionar cliente já identificado ({registeredCustomers.length})...</option>
+                        {registeredCustomers.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.fullName || 'Cliente'} · {c.phone || c.email || c.identifier}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
                   <div className="grid grid-cols-2 gap-3">
                     <div>
                       <label className="block text-[10px] uppercase font-mono tracking-wider text-slate-400 mb-1">

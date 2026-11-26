@@ -719,25 +719,106 @@ export async function identifyOrRegisterCustomer(params: {
 // 3. RECEITAS MÉDICAS OFTALMOLÓGICAS (LGPD ART. 11 - DADOS SENSÍVEIS)
 // ============================================================================
 
+export interface SavePrescriptionResult {
+  id: string;
+  persistedTo: 'supabase' | 'local';
+  fileUploaded: boolean;
+  warning?: string;
+  record: SavedPrescriptionRecord;
+}
+
+function normalizeIsoDate(rawDate?: string): string {
+  const cleaned = (rawDate || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(cleaned)) {
+    const parsed = new Date(`${cleaned}T00:00:00Z`);
+    if (!Number.isNaN(parsed.getTime())) {
+      return cleaned;
+    }
+  }
+  return new Date().toISOString().split('T')[0];
+}
+
+function normalizeOpticalNumber(rawValue?: string, fallback = '0.00'): string {
+  const cleaned = (rawValue || '').trim().replace(',', '.');
+  if (!cleaned) return fallback;
+  return cleaned.slice(0, 6);
+}
+
+function normalizeOpticalAxis(rawAxis?: string): string {
+  const digits = (rawAxis || '').replace(/\D/g, '').slice(0, 3);
+  if (!digits) return '0';
+  const num = parseInt(digits, 10);
+  return String(Math.min(180, Math.max(0, num)));
+}
+
+function buildGuestIdentifier(patientName: string): string {
+  const slug = patientName
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 32);
+  return `guest:${slug || 'paciente'}`;
+}
+
 export async function savePrescriptionRecord(params: {
   prescription: MedicalPrescription;
   file?: File | null;
   customer?: CustomerSession | null;
   lgpdConsent: boolean;
-}): Promise<{ id: string }> {
+}): Promise<SavePrescriptionResult> {
   if (!params.lgpdConsent) {
     throw new Error('O consentimento LGPD para tratamento de dados de saúde visual é obrigatório.');
   }
 
+  const trimmedPatient = params.prescription.patientName.trim();
+  if (!trimmedPatient) {
+    throw new Error('Informe o nome completo do paciente antes de salvar a receita.');
+  }
+
+  const normalizedDate = normalizeIsoDate(params.prescription.date);
+  const normalizedOd = {
+    spherical: normalizeOpticalNumber(params.prescription.od?.spherical, '0.00'),
+    cylindrical: normalizeOpticalNumber(params.prescription.od?.cylindrical, '0.00'),
+    axis: normalizeOpticalAxis(params.prescription.od?.axis),
+    dnp: (params.prescription.od?.dnp || '').trim(),
+    addition: (params.prescription.od?.addition || '').trim().replace(',', '.'),
+  };
+  const normalizedOe = {
+    spherical: normalizeOpticalNumber(params.prescription.oe?.spherical, '0.00'),
+    cylindrical: normalizeOpticalNumber(params.prescription.oe?.cylindrical, '0.00'),
+    axis: normalizeOpticalAxis(params.prescription.oe?.axis),
+    dnp: (params.prescription.oe?.dnp || '').trim(),
+    addition: (params.prescription.oe?.addition || '').trim().replace(',', '.'),
+  };
+
+  // Never persist transient blob: object URLs into storage
+  const persistedFileMeta = params.file
+    ? {
+        name: params.file.name,
+        size: `${Math.max(0.1, params.file.size / 1024).toFixed(1)} KB`,
+        type: params.file.type || params.prescription.fileAttached?.type || 'application/octet-stream',
+      }
+    : params.prescription.fileAttached
+      ? {
+          name: params.prescription.fileAttached.name,
+          size: params.prescription.fileAttached.size,
+          type: params.prescription.fileAttached.type,
+        }
+      : undefined;
+
   let uploadedFilePath: string | null = null;
+  let fileUploaded = false;
+  let warningMessage: string | undefined;
 
   if (supabase && params.file) {
     try {
-      const ext = params.file.name.split('.').pop()?.toLowerCase() || 'bin';
+      const ext = params.file.name.split('.').pop()?.toLowerCase().replace(/[^a-z0-9]/g, '') || 'bin';
       const ownerPrefix = params.customer?.identifier
         ? params.customer.identifier.replace(/[^a-zA-Z0-9]/g, '_')
         : 'guest';
-      const path = `prescriptions/${ownerPrefix}/${Date.now()}.${ext}`;
+      const path = `prescriptions/${ownerPrefix}/${Date.now()}-${Math.random().toString(36).slice(2, 6)}.${ext}`;
       const { error: uploadErr } = await supabase.storage
         .from('prescriptions-files')
         .upload(path, params.file, {
@@ -746,59 +827,83 @@ export async function savePrescriptionRecord(params: {
         });
       if (!uploadErr) {
         uploadedFilePath = path;
+        fileUploaded = true;
+      } else {
+        warningMessage = 'Os dados ópticos foram salvos, mas o bucket de anexos não aceitou o arquivo no momento.';
       }
     } catch {
-      // Mantém referência do arquivo sem quebrar o fluxo
+      warningMessage = 'Os dados ópticos foram salvos; o anexo permanece vinculado apenas nesta sessão.';
     }
   }
 
-  let finalId = generateUuid();
+  const finalId = generateUuid();
+  const effectiveIdentifier =
+    params.customer?.identifier?.trim() || buildGuestIdentifier(trimmedPatient);
+
+  let persistedTo: 'supabase' | 'local' = 'local';
 
   if (supabase) {
     try {
-      const { data, error } = await supabase
-        .from('prescriptions')
-        .insert({
-          customer_id: isUuid(params.customer?.id) ? params.customer?.id : null,
-          customer_identifier: params.customer?.identifier || null,
-          patient_name: params.prescription.patientName,
-          doctor_name: params.prescription.doctorName || '',
-          doctor_crm: params.prescription.doctorCrm || '',
-          exam_date: params.prescription.date || new Date().toISOString().split('T')[0],
-          od: params.prescription.od,
-          oe: params.prescription.oe,
-          observation: params.prescription.observation || '',
-          file_name: params.prescription.fileAttached?.name || null,
-          file_size: params.prescription.fileAttached?.size || null,
-          file_type: params.prescription.fileAttached?.type || null,
-          file_url: uploadedFilePath,
-          lgpd_consent: true,
-        })
-        .select('id')
-        .single();
+      const { error } = await supabase.from('prescriptions').insert({
+        id: finalId,
+        customer_id: isUuid(params.customer?.id) ? params.customer?.id : null,
+        customer_identifier: effectiveIdentifier,
+        patient_name: trimmedPatient,
+        doctor_name: (params.prescription.doctorName || '').trim(),
+        doctor_crm: (params.prescription.doctorCrm || '').trim(),
+        exam_date: normalizedDate,
+        od: normalizedOd,
+        oe: normalizedOe,
+        observation: (params.prescription.observation || '').trim(),
+        file_name: persistedFileMeta?.name || null,
+        file_size: persistedFileMeta?.size || null,
+        file_type: persistedFileMeta?.type || null,
+        file_url: uploadedFilePath,
+        lgpd_consent: true,
+      });
 
-      if (!error && data?.id) {
-        finalId = data.id;
+      if (!error) {
+        persistedTo = 'supabase';
+      } else {
+        warningMessage =
+          warningMessage ||
+          'Salvo com segurança neste navegador (sincronização remota pendente com o Supabase).';
       }
     } catch {
-      // Fallback local
+      warningMessage =
+        warningMessage ||
+        'Salvo com segurança neste navegador (sem conexão com o Supabase no momento).';
     }
   }
 
-  const existing = readJsonStorage<SavedPrescriptionRecord[]>(STORAGE_KEYS.PRESCRIPTIONS, []);
   const savedRecord: SavedPrescriptionRecord = {
-    ...params.prescription,
     id: finalId,
     customerId: params.customer?.id,
+    patientName: trimmedPatient,
+    doctorName: (params.prescription.doctorName || '').trim(),
+    doctorCrm: (params.prescription.doctorCrm || '').trim(),
+    date: normalizedDate,
+    od: normalizedOd,
+    oe: normalizedOe,
+    observation: (params.prescription.observation || '').trim(),
+    fileAttached: persistedFileMeta,
     createdAt: new Date().toISOString(),
   };
+
+  const existing = readJsonStorage<SavedPrescriptionRecord[]>(STORAGE_KEYS.PRESCRIPTIONS, []);
   writeJsonStorage(STORAGE_KEYS.PRESCRIPTIONS, [
     savedRecord,
     ...existing.filter((p) => p.id !== finalId),
-  ]);
+  ].slice(0, 40));
   window.dispatchEvent(new CustomEvent(PRESCRIPTIONS_UPDATED_EVENT));
 
-  return { id: finalId };
+  return {
+    id: finalId,
+    persistedTo,
+    fileUploaded,
+    warning: warningMessage,
+    record: savedRecord,
+  };
 }
 
 export async function fetchPrescriptions(): Promise<SavedPrescriptionRecord[]> {
@@ -826,9 +931,16 @@ export async function fetchPrescriptions(): Promise<SavedPrescriptionRecord[]> {
       doctorName: row.doctor_name || '',
       doctorCrm: row.doctor_crm || '',
       date: row.exam_date || new Date().toISOString().split('T')[0],
-      od: row.od || { spherical: '0.00', cylindrical: '0.00', axis: '0', dnp: '' },
-      oe: row.oe || { spherical: '0.00', cylindrical: '0.00', axis: '0', dnp: '' },
+      od: row.od || { spherical: '0.00', cylindrical: '0.00', axis: '0', dnp: '', addition: '' },
+      oe: row.oe || { spherical: '0.00', cylindrical: '0.00', axis: '0', dnp: '', addition: '' },
       observation: row.observation || '',
+      fileAttached: row.file_name
+        ? {
+            name: row.file_name,
+            size: row.file_size || '',
+            type: row.file_type || '',
+          }
+        : undefined,
       createdAt: row.created_at || new Date().toISOString(),
     }));
 

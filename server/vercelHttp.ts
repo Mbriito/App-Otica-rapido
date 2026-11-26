@@ -16,17 +16,47 @@ export function sendJson(res: VercelLikeResponse, statusCode: number, payload: u
   res.end(JSON.stringify(payload));
 }
 
+const MAX_BODY_BYTES = 16 * 1024 * 1024; // 16MB
+
+export class HttpBodyError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
 export async function readJsonBody(req: VercelLikeRequest): Promise<Record<string, unknown>> {
   if (req.body && typeof req.body === 'object') {
     return req.body as Record<string, unknown>;
   }
   if (typeof req.body === 'string' && req.body.trim()) {
-    return JSON.parse(req.body) as Record<string, unknown>;
+    try {
+      return JSON.parse(req.body) as Record<string, unknown>;
+    } catch {
+      throw new HttpBodyError(400, 'Requisição JSON inválida.');
+    }
   }
 
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    let totalBytes = 0;
+
+    req.on('data', (chunk: Buffer) => {
+      totalBytes += chunk.length;
+      if (totalBytes > MAX_BODY_BYTES) {
+        reject(
+          new HttpBodyError(
+            413,
+            'O arquivo enviado excede o limite de tamanho aceito pelo servidor. Tente uma foto mais leve.'
+          )
+        );
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+
     req.on('end', () => {
       const raw = Buffer.concat(chunks).toString('utf8').trim();
       if (!raw) {
@@ -36,10 +66,13 @@ export async function readJsonBody(req: VercelLikeRequest): Promise<Record<strin
       try {
         const parsed = JSON.parse(raw);
         resolve(parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {});
-      } catch (err) {
-        reject(err);
+      } catch {
+        reject(new HttpBodyError(400, 'Requisição JSON inválida ao enviar os dados.'));
       }
     });
-    req.on('error', reject);
+
+    req.on('error', () => {
+      reject(new HttpBodyError(400, 'Falha na leitura do corpo da requisição.'));
+    });
   });
 }

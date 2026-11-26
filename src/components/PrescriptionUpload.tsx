@@ -10,12 +10,22 @@ import {
   UserCheck,
   RotateCcw,
   Eye,
+  Trash2,
+  ArrowRight,
+  Save,
+  History,
 } from 'lucide-react';
-import { CustomerSession, MedicalPrescription } from '../types';
-import { savePrescriptionRecord } from '../services/supabaseService';
+import { CustomerSession, MedicalPrescription, SavedPrescriptionRecord } from '../types';
+import {
+  fetchPrescriptions,
+  savePrescriptionRecord,
+  subscribeToPrescriptions,
+} from '../services/supabaseService';
+import { formatDateBR } from '../utils/quoteUtils';
 
 interface PrescriptionUploadProps {
   onPrescriptionAdded: (prescription: MedicalPrescription) => void;
+  onPrescriptionSaved?: (prescription: MedicalPrescription) => void;
   customerSession?: CustomerSession | null;
   onRequestLogin?: () => void;
   onOpenLgpdPolicy?: () => void;
@@ -47,14 +57,25 @@ interface PrescriptionReadResponse {
 }
 
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
-const TARGET_MAX_BASE64_CHARS = 950_000; // ~700KB decoded, safe for all reverse proxies
+const MAX_PDF_OCR_BYTES = 4 * 1024 * 1024; // 4MB safe limit for serverless JSON payloads
+const TARGET_MAX_BASE64_CHARS = 950_000; // ~700KB decoded, safe for all reverse proxies & Vercel
 
 function inferMimeType(file: File): string {
   const direct = (file.type || '').toLowerCase().trim();
+  const lowerName = file.name.toLowerCase();
+
+  if (
+    direct === 'image/heic' ||
+    direct === 'image/heif' ||
+    lowerName.endsWith('.heic') ||
+    lowerName.endsWith('.heif')
+  ) {
+    return 'image/heic';
+  }
+
   if (direct) {
     return direct === 'image/jpg' ? 'image/jpeg' : direct;
   }
-  const lowerName = file.name.toLowerCase();
   if (lowerName.endsWith('.pdf')) return 'application/pdf';
   if (lowerName.endsWith('.png')) return 'image/png';
   if (lowerName.endsWith('.webp')) return 'image/webp';
@@ -86,17 +107,17 @@ function formatNonJsonDiagnostic(
     .replace(/<[^>]+>/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, 160);
+    .slice(0, 140);
 
   let hint = 'O servidor retornou uma resposta inesperada (não JSON).';
   if (status === 413) {
-    hint = 'A imagem enviada ficou acima do limite aceito pelo servidor.';
+    hint = 'A imagem enviada ficou acima do limite aceito pelo servidor. Tente enviar uma foto mais leve.';
   } else if (status === 404) {
-    hint = 'Endpoint de leitura (/api/prescriptions/read) não encontrado neste ambiente.';
+    hint = 'Rota de leitura automática (/api/prescriptions/read) indisponível neste ambiente.';
   } else if (status === 502 || status === 503 || status === 504) {
-    hint = 'O servidor demorou para responder ou está reiniciando. Tente novamente em instantes.';
+    hint = 'O servidor demorou para responder. Tente novamente em instantes ou preencha os campos manualmente.';
   } else if (status === 401 || status === 403) {
-    hint = 'Acesso bloqueado pelo proxy/servidor ao chamar a rota de leitura.';
+    hint = 'Acesso bloqueado ao chamar a rota de leitura automática.';
   }
 
   const statusLabel = `HTTP ${status}${statusText ? ` ${statusText}` : ''}`;
@@ -119,12 +140,10 @@ async function prepareFileForOcr(file: File): Promise<{ base64: string; mimeType
   const inferredMime = inferMimeType(file);
   const dataUrl = await readFileAsDataUrl(file);
 
-  // PDFs are sent as-is (Gemini natively reads PDFs via inlineData)
   if (inferredMime === 'application/pdf') {
     return { base64: dataUrl, mimeType: 'application/pdf' };
   }
 
-  // Resize and compress photos cleanly so WhatsApp/camera images stay crisp and well under proxy size limits
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
@@ -164,6 +183,7 @@ async function prepareFileForOcr(file: File): Promise<{ base64: string; mimeType
 
 export default function PrescriptionUpload({
   onPrescriptionAdded,
+  onPrescriptionSaved,
   customerSession,
   onRequestLogin,
   onOpenLgpdPolicy,
@@ -177,9 +197,14 @@ export default function PrescriptionUpload({
   const [confidenceNote, setConfidenceNote] = useState<string | null>(null);
   const [lgpdConsent, setLgpdConsent] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
-  const [saveFeedback, setSaveFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(
-    null
-  );
+  const [lastSavedPrescription, setLastSavedPrescription] =
+    useState<SavedPrescriptionRecord | null>(null);
+  const [savedList, setSavedList] = useState<SavedPrescriptionRecord[]>([]);
+  const [saveFeedback, setSaveFeedback] = useState<{
+    type: 'success' | 'error';
+    text: string;
+    detail?: string;
+  } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [prescription, setPrescription] = useState<MedicalPrescription>({
@@ -191,6 +216,20 @@ export default function PrescriptionUpload({
     oe: { spherical: '0.00', cylindrical: '0.00', axis: '0', dnp: '', addition: '' },
     observation: '',
   });
+
+  useEffect(() => {
+    let active = true;
+    fetchPrescriptions().then((records) => {
+      if (active) setSavedList(records);
+    });
+    const unsubscribe = subscribeToPrescriptions((records) => {
+      if (active) setSavedList(records);
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, []);
 
   useEffect(() => {
     if (customerSession?.fullName) {
@@ -239,8 +278,18 @@ export default function PrescriptionUpload({
     if (selected) {
       void processFile(selected);
     }
-    // Reset input value so selecting the same file again still triggers onChange
     e.target.value = '';
+  };
+
+  const handleRemoveAttachment = () => {
+    if (previewUrl) {
+      URL.revokeObjectURL(previewUrl);
+    }
+    setPreviewUrl(null);
+    setFile(null);
+    setScanComplete(false);
+    setScanError(null);
+    setConfidenceNote(null);
   };
 
   const processFile = async (selectedFile: File) => {
@@ -248,9 +297,25 @@ export default function PrescriptionUpload({
     setConfidenceNote(null);
     setSaveFeedback(null);
 
+    if (selectedFile.size === 0) {
+      setScanError('O arquivo selecionado está vazio (0 bytes). Escolha outra foto ou PDF.');
+      return;
+    }
+
     const detectedMime = inferMimeType(selectedFile);
+    if (detectedMime === 'image/heic') {
+      setScanError(
+        'Formato HEIC (iPhone) não é aceito diretamente. Tire um print da receita ou salve em JPG, PNG ou PDF e envie novamente.'
+      );
+      return;
+    }
+
     const isPdf = detectedMime === 'application/pdf';
-    const isImage = detectedMime.startsWith('image/');
+    const isImage =
+      detectedMime === 'image/jpeg' ||
+      detectedMime === 'image/png' ||
+      detectedMime === 'image/webp' ||
+      detectedMime === 'image/gif';
 
     if (!isImage && !isPdf) {
       setScanError('Formato não suportado. Envie uma imagem (JPG, PNG, WEBP) ou arquivo PDF.');
@@ -258,7 +323,7 @@ export default function PrescriptionUpload({
     }
 
     if (selectedFile.size > MAX_FILE_SIZE_BYTES) {
-      setScanError('O arquivo ultrapassa 10MB. Envie uma imagem ou PDF menor.');
+      setScanError('O arquivo ultrapassa o limite de 10MB. Envie uma imagem ou PDF mais leve.');
       return;
     }
 
@@ -267,6 +332,15 @@ export default function PrescriptionUpload({
     }
     setPreviewUrl(isImage ? URL.createObjectURL(selectedFile) : null);
     setFile(selectedFile);
+
+    if (isPdf && selectedFile.size > MAX_PDF_OCR_BYTES) {
+      setScanComplete(false);
+      setScanError(
+        'PDF anexado com sucesso, mas excede 4MB para leitura automática. Preencha os graus ao lado e salve normalmente.'
+      );
+      return;
+    }
+
     setIsScanning(true);
     setScanComplete(false);
 
@@ -309,37 +383,37 @@ export default function PrescriptionUpload({
       if (!response.ok) {
         throw new Error(
           data.error ||
-            `Não foi possível ler a receita enviada (HTTP ${response.status}). Tente novamente.`
+            `Não foi possível ler a receita enviada (HTTP ${response.status}). Você pode preencher os valores manualmente ao lado.`
         );
       }
 
       if (!data.isValidPrescription) {
         setScanError(
           data.confidenceNote ||
-            'O arquivo enviado não parece ser uma receita oftalmológica legível. Envie uma foto mais nítida ou preencha os campos manualmente.'
+            'O arquivo anexado não parece ser uma receita oftalmológica legível. Envie uma foto mais nítida ou preencha os campos manualmente.'
         );
         return;
       }
 
       setPrescription((prev) => ({
         patientName: data.patientName?.trim() || prev.patientName || customerSession?.fullName || '',
-        doctorName: data.doctorName?.trim() || '',
-        doctorCrm: data.doctorCrm?.trim() || '',
+        doctorName: data.doctorName?.trim() || prev.doctorName || '',
+        doctorCrm: data.doctorCrm?.trim() || prev.doctorCrm || '',
         date:
           data.date && /^\d{4}-\d{2}-\d{2}$/.test(data.date.trim())
             ? data.date.trim()
             : prev.date,
         od: {
-          spherical: data.od?.spherical?.trim() || '0.00',
-          cylindrical: data.od?.cylindrical?.trim() || '0.00',
-          axis: data.od?.axis?.trim() || '0',
+          spherical: sanitizeDiopterInput(data.od?.spherical || '0.00') || '0.00',
+          cylindrical: sanitizeDiopterInput(data.od?.cylindrical || '0.00') || '0.00',
+          axis: sanitizeAxisInput(data.od?.axis || '0') || '0',
           dnp: data.od?.dnp?.trim() || '',
           addition: data.od?.addition?.trim() || '',
         },
         oe: {
-          spherical: data.oe?.spherical?.trim() || '0.00',
-          cylindrical: data.oe?.cylindrical?.trim() || '0.00',
-          axis: data.oe?.axis?.trim() || '0',
+          spherical: sanitizeDiopterInput(data.oe?.spherical || '0.00') || '0.00',
+          cylindrical: sanitizeDiopterInput(data.oe?.cylindrical || '0.00') || '0.00',
+          axis: sanitizeAxisInput(data.oe?.axis || '0') || '0',
           dnp: data.oe?.dnp?.trim() || '',
           addition: data.oe?.addition?.trim() || '',
         },
@@ -354,7 +428,7 @@ export default function PrescriptionUpload({
       const message =
         err instanceof Error
           ? err.message
-          : 'Erro ao realizar a leitura automática da receita. Você pode tentar novamente ou digitar os valores ao lado.';
+          : 'Erro ao realizar a leitura automática da receita. O arquivo continua anexado — você pode tentar novamente ou digitar os valores ao lado.';
       setScanError(message);
     } finally {
       setIsScanning(false);
@@ -420,76 +494,133 @@ export default function PrescriptionUpload({
     fileInputRef.current?.click();
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const persistPrescription = async (redirectToQuotes: boolean) => {
     setSaveFeedback(null);
 
-    if (!lgpdConsent) {
+    if (!prescription.patientName.trim()) {
       setSaveFeedback({
         type: 'error',
-        text: 'Confirme o consentimento LGPD para proteger e processar sua receita médica.',
+        text: 'Informe o nome completo do paciente antes de salvar a receita.',
       });
       return;
     }
 
-    const enrichedPrescription: MedicalPrescription = {
+    if (!lgpdConsent) {
+      setSaveFeedback({
+        type: 'error',
+        text: 'Confirme o consentimento LGPD para proteger e registrar sua receita médica.',
+      });
+      return;
+    }
+
+    const normalizedPrescription: MedicalPrescription = {
       ...prescription,
+      patientName: prescription.patientName.trim(),
+      doctorName: prescription.doctorName.trim(),
+      doctorCrm: prescription.doctorCrm.trim(),
+      date: prescription.date || new Date().toISOString().split('T')[0],
+      od: {
+        ...prescription.od,
+        spherical: (prescription.od.spherical || '0.00').trim().replace(',', '.') || '0.00',
+        cylindrical: (prescription.od.cylindrical || '0.00').trim().replace(',', '.') || '0.00',
+        axis: (prescription.od.axis || '0').trim() || '0',
+      },
+      oe: {
+        ...prescription.oe,
+        spherical: (prescription.oe.spherical || '0.00').trim().replace(',', '.') || '0.00',
+        cylindrical: (prescription.oe.cylindrical || '0.00').trim().replace(',', '.') || '0.00',
+        axis: (prescription.oe.axis || '0').trim() || '0',
+      },
       fileAttached: file
         ? {
             name: file.name,
-            size: `${(file.size / 1024).toFixed(1)} KB`,
-            type: file.type,
-            previewUrl: previewUrl || undefined,
+            size: `${Math.max(0.1, file.size / 1024).toFixed(1)} KB`,
+            type: inferMimeType(file) || file.type || 'application/octet-stream',
           }
         : undefined,
     };
 
     setIsSaving(true);
     try {
-      await savePrescriptionRecord({
-        prescription: enrichedPrescription,
+      const result = await savePrescriptionRecord({
+        prescription: normalizedPrescription,
         file,
         customer: customerSession,
         lgpdConsent,
       });
+
+      setLastSavedPrescription(result.record);
+      setPrescription(result.record);
+      onPrescriptionSaved?.(result.record);
+
+      const storageNote =
+        result.persistedTo === 'supabase'
+          ? result.fileUploaded
+            ? 'Dados e anexo salvos com sigilo LGPD no banco de dados.'
+            : 'Dados salvos com sigilo LGPD no banco de dados.'
+          : result.warning || 'Receita salva com segurança e pronta para uso nos orçamentos.';
+
       setSaveFeedback({
         type: 'success',
-        text: 'Receita Médica registrada com sigilo LGPD e vinculada ao seu orçamento!',
+        text: `Receita de ${result.record.patientName} salva com sucesso!`,
+        detail: storageNote,
       });
-      setTimeout(() => {
-        onPrescriptionAdded(enrichedPrescription);
-      }, 650);
-    } catch (err: any) {
+
+      if (redirectToQuotes) {
+        onPrescriptionAdded(result.record);
+      }
+    } catch (err: unknown) {
       setSaveFeedback({
         type: 'error',
-        text: err?.message || 'Não foi possível salvar a receita. Tente novamente.',
+        text:
+          err instanceof Error
+            ? err.message
+            : 'Não foi possível salvar a receita. Verifique os campos e tente novamente.',
       });
     } finally {
       setIsSaving(false);
     }
   };
 
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await persistPrescription(false);
+  };
+
+  const handleLoadSavedIntoForm = (record: SavedPrescriptionRecord) => {
+    handleRemoveAttachment();
+    setPrescription({
+      patientName: record.patientName,
+      doctorName: record.doctorName,
+      doctorCrm: record.doctorCrm,
+      date: record.date,
+      od: { ...record.od },
+      oe: { ...record.oe },
+      observation: record.observation || '',
+      fileAttached: record.fileAttached,
+    });
+    setLastSavedPrescription(record);
+    setSaveFeedback({
+      type: 'success',
+      text: `Receita de ${record.patientName} carregada para conferência.`,
+    });
+  };
+
   const getWhatsAppPrescriptionUrl = () => {
-    const text = `Olá! Acabei de carregar minha receita no site Ótica Rapido:\n\n*Paciente:* ${
+    const text = `Olá! Preciso de ajuda com a leitura da minha receita na Ótica Rapido:\n\n*Paciente:* ${
       prescription.patientName || 'Não Informado'
-    }\n*Médico:* ${prescription.doctorName || 'Não Informado'}${
-      prescription.doctorCrm ? ` (${prescription.doctorCrm})` : ''
-    }\n*Olho Direito (OD):* Esf: ${prescription.od.spherical} / Cil: ${
-      prescription.od.cylindrical
-    } / Eixo: ${prescription.od.axis}°${
-      prescription.od.dnp ? ` / DNP: ${prescription.od.dnp}mm` : ''
-    }${prescription.od.addition ? ` / Adição: ${prescription.od.addition}` : ''}\n*Olho Esquerdo (OE):* Esf: ${
-      prescription.oe.spherical
-    } / Cil: ${prescription.oe.cylindrical} / Eixo: ${prescription.oe.axis}°${
-      prescription.oe.dnp ? ` / DNP: ${prescription.oe.dnp}mm` : ''
-    }${prescription.oe.addition ? ` / Adição: ${prescription.oe.addition}` : ''}\n\nGostaria de solicitar um orçamento para lentes adequadas para o meu grau!`;
+    }\n*Olho Direito (OD):* Esf: ${prescription.od.spherical || '0.00'} / Cil: ${
+      prescription.od.cylindrical || '0.00'
+    } / Eixo: ${prescription.od.axis || '0'}°\n*Olho Esquerdo (OE):* Esf: ${
+      prescription.oe.spherical || '0.00'
+    } / Cil: ${prescription.oe.cylindrical || '0.00'} / Eixo: ${prescription.oe.axis || '0'}°`;
     return `https://wa.me/5511947069414?text=${encodeURIComponent(text)}`;
   };
 
   return (
-    <div className="py-8 max-w-5xl mx-auto">
+    <div className="py-8 max-w-5xl mx-auto space-y-8">
       {/* Introduction */}
-      <div className="text-center mb-10">
+      <div className="text-center">
         <span className="text-gold-600 font-mono text-xs uppercase tracking-widest font-semibold">
           Leitura Óptica por Imagem e PDF
         </span>
@@ -497,7 +628,7 @@ export default function PrescriptionUpload({
           Leitor Inteligente de Receita
         </h2>
         <p className="font-sans text-slate-500 text-sm mt-2 max-w-2xl mx-auto">
-          Arraste ou selecione a foto ou PDF da sua receita oftalmológica. O leitor extrai automaticamente os graus esférico, cilíndrico, eixo, DNP e adição para você apenas conferir.
+          Anexe a foto ou PDF da sua receita oftalmológica para leitura automática ou digite os graus manualmente. Depois de salvar, envie direto para a Central de Orçamentos.
         </p>
       </div>
 
@@ -524,7 +655,7 @@ export default function PrescriptionUpload({
               type="file"
               ref={fileInputRef}
               onChange={handleFileChange}
-              accept="image/jpeg,image/png,image/webp,application/pdf"
+              accept=".jpg,.jpeg,.png,.webp,.pdf,image/jpeg,image/png,image/webp,application/pdf"
               className="hidden"
             />
 
@@ -534,10 +665,10 @@ export default function PrescriptionUpload({
                   <Upload className="h-8 w-8 text-slate-600" />
                 </div>
                 <h4 className="font-sans font-bold text-sm text-slate-800">
-                  {isDragging ? 'Solte a receita aqui para ler' : 'Arraste a Receita ou Foto'}
+                  {isDragging ? 'Solte a receita aqui para ler' : 'Anexar Receita (Foto ou PDF)'}
                 </h4>
                 <p className="text-xs text-slate-500 mt-1">
-                  Suporta fotos JPG, PNG, WEBP e PDF de até 10MB
+                  Formatos aceitos: JPG, PNG, WEBP e PDF (até 10MB)
                 </p>
                 <button
                   type="button"
@@ -564,9 +695,20 @@ export default function PrescriptionUpload({
                       {file.name}
                     </h4>
                     <p className="text-[11px] text-slate-500 font-mono tabular-nums">
-                      {(file.size / 1024).toFixed(1)} KB
+                      {(file.size / 1024).toFixed(1)} KB ·{' '}
+                      {inferMimeType(file) === 'application/pdf' ? 'PDF' : 'Imagem'}
                     </p>
                   </div>
+                  {!isScanning && (
+                    <button
+                      type="button"
+                      onClick={handleRemoveAttachment}
+                      title="Remover anexo"
+                      className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer flex-shrink-0"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  )}
                 </div>
 
                 {/* Image Preview so user can compare directly with extracted fields */}
@@ -587,7 +729,7 @@ export default function PrescriptionUpload({
                       Lendo receita oftalmológica...
                     </p>
                     <p className="text-[11px] text-slate-500 mt-1">
-                      Extraindo graus esférico, cilíndrico, eixos, DNP e adição do seu arquivo
+                      Extraindo graus esférico, cilíndrico e eixos do arquivo anexado
                     </p>
                   </div>
                 )}
@@ -597,8 +739,11 @@ export default function PrescriptionUpload({
                     <div className="flex items-start gap-2 p-3 bg-rose-50 border border-rose-200 text-rose-900 rounded-xl">
                       <AlertCircle className="h-4 w-4 text-rose-600 flex-shrink-0 mt-0.5" />
                       <div className="text-xs leading-relaxed">
-                        <strong className="block font-bold">Falha na leitura automática</strong>
+                        <strong className="block font-bold">Aviso na leitura automática</strong>
                         <span>{scanError}</span>
+                        <span className="block mt-1 text-[11px] text-rose-700">
+                          O arquivo continua anexado — você pode preencher os graus ao lado e salvar normalmente.
+                        </span>
                       </div>
                     </div>
                     <div className="grid grid-cols-2 gap-2">
@@ -626,9 +771,9 @@ export default function PrescriptionUpload({
                     <div className="flex items-start gap-2 p-3 bg-emerald-50 border border-emerald-200 text-emerald-900 rounded-xl">
                       <CheckCircle className="h-4 w-4 text-emerald-600 flex-shrink-0 mt-0.5" />
                       <div className="text-xs leading-relaxed">
-                        <strong className="block font-bold">Leitura da receita concluída</strong>
+                        <strong className="block font-bold">Leitura concluída com sucesso</strong>
                         <span>
-                          Confira os dados extraídos ao lado antes de vincular ao orçamento.
+                          Confira os dados ao lado e clique em &ldquo;Salvar Receita&rdquo;.
                         </span>
                       </div>
                     </div>
@@ -640,13 +785,22 @@ export default function PrescriptionUpload({
                       </div>
                     )}
 
-                    <button
-                      type="button"
-                      onClick={triggerFileInput}
-                      className="w-full text-center py-2 text-xs font-semibold text-slate-700 hover:text-slate-950 border border-slate-200 hover:border-slate-300 rounded-xl bg-white transition-all cursor-pointer"
-                    >
-                      Enviar Outra Receita ou Foto
-                    </button>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={triggerFileInput}
+                        className="py-2 px-3 text-xs font-semibold text-slate-700 hover:text-slate-950 border border-slate-200 hover:border-slate-300 rounded-xl bg-white transition-all cursor-pointer"
+                      >
+                        Trocar Arquivo
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleRemoveAttachment}
+                        className="py-2 px-3 text-xs font-semibold text-rose-700 hover:text-rose-900 border border-rose-200 hover:border-rose-300 rounded-xl bg-rose-50/50 transition-all cursor-pointer"
+                      >
+                        Remover Anexo
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -675,6 +829,7 @@ export default function PrescriptionUpload({
         {/* RIGHT COLUMN: Prescription parameters fields */}
         <div className="md:col-span-7">
           <form
+            noValidate
             onSubmit={handleSubmit}
             className="bg-white border border-slate-200/80 rounded-2xl p-6 md:p-8 shadow-sm text-left"
           >
@@ -682,7 +837,7 @@ export default function PrescriptionUpload({
               Dados Optométricos da Receita
             </h3>
             <p className="text-xs text-slate-500 mb-6">
-              Certifique-se de que os valores lidos coincidem exatamente com o documento assinado pelo oftalmologista.
+              Certifique-se de que os valores coincidem com o documento assinado pelo oftalmologista.
             </p>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
@@ -904,18 +1059,38 @@ export default function PrescriptionUpload({
 
             {saveFeedback && (
               <div
-                className={`mb-4 p-3 rounded-xl border text-xs flex items-center gap-2 ${
+                className={`mb-4 p-3.5 rounded-xl border text-xs space-y-2 ${
                   saveFeedback.type === 'success'
-                    ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
-                    : 'bg-rose-50 border-rose-200 text-rose-800'
+                    ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                    : 'bg-rose-50 border-rose-200 text-rose-900'
                 }`}
               >
-                {saveFeedback.type === 'success' ? (
-                  <CheckCircle className="h-4 w-4 text-emerald-600 flex-shrink-0" />
-                ) : (
-                  <AlertCircle className="h-4 w-4 text-rose-600 flex-shrink-0" />
+                <div className="flex items-start gap-2">
+                  {saveFeedback.type === 'success' ? (
+                    <CheckCircle className="h-4 w-4 text-emerald-600 flex-shrink-0 mt-0.5" />
+                  ) : (
+                    <AlertCircle className="h-4 w-4 text-rose-600 flex-shrink-0 mt-0.5" />
+                  )}
+                  <div>
+                    <strong className="block font-bold">{saveFeedback.text}</strong>
+                    {saveFeedback.detail && (
+                      <span className="block text-[11px] opacity-85 mt-0.5">
+                        {saveFeedback.detail}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {saveFeedback.type === 'success' && lastSavedPrescription && (
+                  <button
+                    type="button"
+                    onClick={() => onPrescriptionAdded(lastSavedPrescription)}
+                    className="w-full sm:w-auto px-4 py-2 bg-slate-900 hover:bg-slate-800 text-gold-400 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <span>Ir para Orçamentos com esta Receita</span>
+                    <ArrowRight className="h-3.5 w-3.5" />
+                  </button>
                 )}
-                <span>{saveFeedback.text}</span>
               </div>
             )}
 
@@ -923,23 +1098,101 @@ export default function PrescriptionUpload({
               <button
                 type="submit"
                 disabled={isSaving || isScanning}
-                className="w-full py-3 bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-gold-400 font-sans font-bold text-xs rounded-xl transition-all shadow-md text-center cursor-pointer"
+                className="w-full py-3 bg-white hover:bg-slate-50 border border-slate-900 disabled:opacity-60 text-slate-900 font-sans font-bold text-xs rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer"
               >
-                {isSaving ? 'Salvando com sigilo LGPD...' : 'Salvar Receita e Usar no Orçamento'}
+                <Save className="h-4 w-4" />
+                <span>{isSaving ? 'Salvando...' : 'Salvar Receita'}</span>
               </button>
+              <button
+                type="button"
+                disabled={isSaving || isScanning}
+                onClick={() => void persistPrescription(true)}
+                className="w-full py-3 bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-gold-400 font-sans font-bold text-xs rounded-xl transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <span>{isSaving ? 'Salvando...' : 'Salvar e Montar Orçamento'}</span>
+                <ArrowRight className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between gap-2 text-[11px] text-slate-500">
+              <span>Dúvidas para ler algum número da sua receita?</span>
               <a
                 href={getWhatsAppPrescriptionUrl()}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-sans font-bold text-xs rounded-xl transition-all flex items-center justify-center gap-2 shadow-md"
+                className="inline-flex items-center gap-1.5 font-bold text-emerald-700 hover:text-emerald-800 whitespace-nowrap"
               >
-                <MessageSquare className="h-4 w-4" />
-                Dúvidas? Chamar no WhatsApp
+                <MessageSquare className="h-3.5 w-3.5" />
+                Tirar dúvida no WhatsApp
               </a>
             </div>
           </form>
         </div>
       </div>
+
+      {/* RECENTLY SAVED PRESCRIPTIONS */}
+      {savedList.length > 0 && (
+        <div className="bg-white border border-slate-200/80 rounded-2xl p-5 md:p-6 shadow-xs text-left">
+          <div className="flex items-center justify-between gap-2 pb-3 mb-4 border-b border-slate-100">
+            <div className="flex items-center gap-2">
+              <History className="h-4 w-4 text-gold-600" />
+              <h3 className="font-display font-bold text-sm text-slate-900">
+                Receitas Salvas ({savedList.length})
+              </h3>
+            </div>
+            <span className="text-[11px] text-slate-500">
+              Clique para revisar ou enviar direto para a aba Orçamentos
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {savedList.slice(0, 6).map((rx) => (
+              <div
+                key={rx.id}
+                className="p-3.5 bg-slate-50 border border-slate-200/80 rounded-xl flex flex-col justify-between gap-2.5"
+              >
+                <div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-bold text-xs text-slate-900 truncate">
+                      {rx.patientName}
+                    </span>
+                    <span className="font-mono text-[10px] text-slate-500 flex-shrink-0">
+                      {formatDateBR(rx.date)}
+                    </span>
+                  </div>
+                  <p className="font-mono tabular-nums text-[11px] text-slate-600 mt-1">
+                    OD: {rx.od.spherical} / {rx.od.cylindrical} ({rx.od.axis}°) · OE:{' '}
+                    {rx.oe.spherical} / {rx.oe.cylindrical} ({rx.oe.axis}°)
+                  </p>
+                  {rx.fileAttached?.name && (
+                    <p className="text-[10px] text-slate-500 mt-0.5 truncate">
+                      Anexo: {rx.fileAttached.name}
+                    </p>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => handleLoadSavedIntoForm(rx)}
+                    className="px-2.5 py-1.5 bg-white hover:bg-slate-100 border border-slate-200 rounded-lg text-[11px] font-semibold text-slate-700 cursor-pointer"
+                  >
+                    Editar / Conferir
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onPrescriptionAdded(rx)}
+                    className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-gold-400 rounded-lg text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                  >
+                    <span>Usar no Orçamento</span>
+                    <ArrowRight className="h-3 w-3" />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -2,6 +2,68 @@ import { MedicalPrescription, OpticalQuote, SelectedItem } from '../types';
 
 export const STORE_WHATSAPP_NUMBER = '5511947069414';
 
+export interface CatalogLensOption {
+  id: string;
+  name: string;
+  price: number;
+  desc: string;
+  treatmentId?: 'antirreflexo' | 'filtro_azul' | 'fotocromaticas';
+}
+
+export const CATALOG_LENS_OPTIONS: CatalogLensOption[] = [
+  {
+    id: 'frame_only',
+    name: 'Somente Armação (Lente de Demonstração)',
+    price: 0,
+    desc: 'Sem grau oftálmico, para uso estético ou com lentes a definir na visita.',
+  },
+  {
+    id: 'antirreflexo',
+    name: 'Lente Monofocal Orgânica + Antirreflexo (AR)',
+    price: 145.0,
+    desc: 'Ideal para Miopia, Hipermetropia ou Astigmatismo com transparência total.',
+    treatmentId: 'antirreflexo',
+  },
+  {
+    id: 'filtro_azul',
+    name: 'Lente Monofocal Orgânica + Filtro Azul (Blue UV / BlueCut)',
+    price: 290.0,
+    desc: 'Bloqueio da luz azul de telas e computadores, reduzindo o cansaço ocular.',
+    treatmentId: 'filtro_azul',
+  },
+  {
+    id: 'fotocromaticas',
+    name: 'Lente Monofocal Orgânica + Fotocromáticas (Fotossensíveis)',
+    price: 390.0,
+    desc: 'Claras em ambientes fechados e escuras no sol com proteção UV400.',
+    treatmentId: 'fotocromaticas',
+  },
+  {
+    id: 'multifocal',
+    name: 'Lente Multifocal Progressiva Digital + Antirreflexo (AR)',
+    price: 480.0,
+    desc: 'Para presbiopia (longe, intermediário e perto) com campo visual amplo.',
+    treatmentId: 'antirreflexo',
+  },
+];
+
+export function inferTreatmentIdFromLensType(
+  lensType?: string
+): 'antirreflexo' | 'filtro_azul' | 'fotocromaticas' | '' {
+  const lower = (lensType || '').toLowerCase();
+  if (!lower) return '';
+  if (lower.includes('fotocrom') || lower.includes('fotossens') || lower.includes('transition')) {
+    return 'fotocromaticas';
+  }
+  if (lower.includes('azul') || lower.includes('blue')) {
+    return 'filtro_azul';
+  }
+  if (lower.includes('antirreflexo') || lower.includes('(ar)')) {
+    return 'antirreflexo';
+  }
+  return '';
+}
+
 export function formatBRL(value: number): string {
   const safe = Number.isFinite(value) ? value : 0;
   return safe.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
