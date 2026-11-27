@@ -1,5 +1,5 @@
 import React from 'react';
-import { UserCheck, Sparkles, ArrowRight, CheckCircle2, ShieldCheck, Heart, Circle, Square, HelpCircle } from 'lucide-react';
+import { UserCheck, Sparkles, ArrowRight, CheckCircle2, ShieldCheck } from 'lucide-react';
 
 export interface FaceShapeGuideItem {
   id: 'oval' | 'redondo' | 'quadrado' | 'coracao';
@@ -260,7 +260,14 @@ export default function FaceShapeGuide({ onSelectShapeFilter, activeShapeFilter 
                       : 'bg-white hover:bg-slate-900 hover:text-white text-slate-800 border border-slate-200 shadow-xs'
                   }`}
                 >
-                  <span>Ver Modelos {face.recommendedShapes[0].name}s</span>
+                  <span>
+                    Ver Modelos{' '}
+                    {face.filterShapeId === 'oval'
+                      ? 'Ovais'
+                      : face.filterShapeId === 'gatinho'
+                        ? 'De Gatinha'
+                        : 'Quadrados'}
+                  </span>
                   <ArrowRight className="h-3 w-3" />
                 </button>
               )}

@@ -27,6 +27,7 @@ interface PrescriptionUploadProps {
   onPrescriptionAdded: (prescription: MedicalPrescription) => void;
   onPrescriptionSaved?: (prescription: MedicalPrescription) => void;
   customerSession?: CustomerSession | null;
+  isAdmin?: boolean;
   onRequestLogin?: () => void;
   onOpenLgpdPolicy?: () => void;
 }
@@ -181,10 +182,44 @@ async function prepareFileForOcr(file: File): Promise<{ base64: string; mimeType
   });
 }
 
+function sanitizeDiopterInput(raw: string): string {
+  const cleaned = raw.replace(/[^0-9+\-.,]/g, '');
+  const sign = cleaned.startsWith('+') || cleaned.startsWith('-') ? cleaned[0] : '';
+  const body = cleaned.slice(sign ? 1 : 0).replace(/[+\-]/g, '');
+
+  const sepMatch = body.match(/[.,]/);
+  let formatted = body;
+  if (sepMatch && sepMatch.index !== undefined) {
+    const sep = sepMatch[0];
+    const intPart = body.slice(0, sepMatch.index).replace(/[.,]/g, '');
+    const decPart = body.slice(sepMatch.index + 1).replace(/[.,]/g, '').slice(0, 2);
+    formatted = `${intPart}${sep}${decPart}`;
+  }
+
+  return `${sign}${formatted}`.slice(0, 6);
+}
+
+function sanitizeAxisInput(raw: string): string {
+  const digits = raw.replace(/\D/g, '').slice(0, 3);
+  if (!digits) return '';
+  const num = parseInt(digits, 10);
+  return num > 180 ? '180' : String(num);
+}
+
+function sanitizeDnpInput(raw: string): string {
+  const cleaned = raw.replace(/[^0-9.,]/g, '').replace(',', '.');
+  const parts = cleaned.split('.');
+  if (parts.length > 1) {
+    return `${parts[0].slice(0, 2)}.${parts[1].slice(0, 1)}`;
+  }
+  return cleaned.slice(0, 4);
+}
+
 export default function PrescriptionUpload({
   onPrescriptionAdded,
   onPrescriptionSaved,
   customerSession,
+  isAdmin = false,
   onRequestLogin,
   onOpenLgpdPolicy,
 }: PrescriptionUploadProps) {
@@ -219,17 +254,18 @@ export default function PrescriptionUpload({
 
   useEffect(() => {
     let active = true;
-    fetchPrescriptions().then((records) => {
+    const scope = { isAdmin, customerSession };
+    fetchPrescriptions(scope).then((records) => {
       if (active) setSavedList(records);
     });
     const unsubscribe = subscribeToPrescriptions((records) => {
       if (active) setSavedList(records);
-    });
+    }, scope);
     return () => {
       active = false;
       unsubscribe();
     };
-  }, []);
+  }, [isAdmin, customerSession]);
 
   useEffect(() => {
     if (customerSession?.fullName) {
@@ -435,41 +471,17 @@ export default function PrescriptionUpload({
     }
   };
 
-  const sanitizeDiopterInput = (raw: string): string => {
-    const cleaned = raw.replace(/[^0-9+\-.,]/g, '');
-    const sign = cleaned.startsWith('+') || cleaned.startsWith('-') ? cleaned[0] : '';
-    const body = cleaned.slice(sign ? 1 : 0).replace(/[+\-]/g, '');
-
-    const sepMatch = body.match(/[.,]/);
-    let formatted = body;
-    if (sepMatch && sepMatch.index !== undefined) {
-      const sep = sepMatch[0];
-      const intPart = body.slice(0, sepMatch.index).replace(/[.,]/g, '');
-      const decPart = body.slice(sepMatch.index + 1).replace(/[.,]/g, '').slice(0, 2);
-      formatted = `${intPart}${sep}${decPart}`;
-    }
-
-    return `${sign}${formatted}`.slice(0, 6);
-  };
-
-  const sanitizeAxisInput = (raw: string): string => {
-    const digits = raw.replace(/\D/g, '').slice(0, 3);
-    if (!digits) return '';
-    const num = parseInt(digits, 10);
-    return num > 180 ? '180' : String(num);
-  };
-
   const handleInputChange = (
     eye: 'od' | 'oe',
     field: 'spherical' | 'cylindrical' | 'axis' | 'dnp' | 'addition',
     value: string
   ) => {
     const sanitizedValue =
-      field === 'spherical' || field === 'cylindrical'
+      field === 'spherical' || field === 'cylindrical' || field === 'addition'
         ? sanitizeDiopterInput(value)
         : field === 'axis'
           ? sanitizeAxisInput(value)
-          : value;
+          : sanitizeDnpInput(value);
 
     setPrescription((prev) => ({
       ...prev,
@@ -607,13 +619,27 @@ export default function PrescriptionUpload({
   };
 
   const getWhatsAppPrescriptionUrl = () => {
+    const odExtra = [
+      prescription.od.dnp ? `DNP: ${prescription.od.dnp}mm` : '',
+      prescription.od.addition ? `ADD: ${prescription.od.addition}` : '',
+    ]
+      .filter(Boolean)
+      .join(' / ');
+    const oeExtra = [
+      prescription.oe.dnp ? `DNP: ${prescription.oe.dnp}mm` : '',
+      prescription.oe.addition ? `ADD: ${prescription.oe.addition}` : '',
+    ]
+      .filter(Boolean)
+      .join(' / ');
     const text = `Olá! Preciso de ajuda com a leitura da minha receita na Ótica Rapido:\n\n*Paciente:* ${
       prescription.patientName || 'Não Informado'
     }\n*Olho Direito (OD):* Esf: ${prescription.od.spherical || '0.00'} / Cil: ${
       prescription.od.cylindrical || '0.00'
-    } / Eixo: ${prescription.od.axis || '0'}°\n*Olho Esquerdo (OE):* Esf: ${
+    } / Eixo: ${prescription.od.axis || '0'}°${odExtra ? ` / ${odExtra}` : ''}\n*Olho Esquerdo (OE):* Esf: ${
       prescription.oe.spherical || '0.00'
-    } / Cil: ${prescription.oe.cylindrical || '0.00'} / Eixo: ${prescription.oe.axis || '0'}°`;
+    } / Cil: ${prescription.oe.cylindrical || '0.00'} / Eixo: ${prescription.oe.axis || '0'}°${
+      oeExtra ? ` / ${oeExtra}` : ''
+    }`;
     return `https://wa.me/5511947069414?text=${encodeURIComponent(text)}`;
   };
 
@@ -945,6 +971,34 @@ export default function PrescriptionUpload({
                     className="w-full text-center px-2 py-1.5 border border-slate-200 rounded-lg text-xs font-mono tabular-nums font-bold text-slate-800 focus:ring-2 focus:ring-gold-500 focus:border-gold-500 outline-none"
                   />
                 </div>
+                <div className="w-20 max-w-[92px]">
+                  <label className="block text-[10px] font-mono text-slate-500 mb-1 leading-tight">
+                    DNP (mm)
+                  </label>
+                  <input
+                    type="text"
+                    maxLength={4}
+                    inputMode="decimal"
+                    placeholder="31.5"
+                    value={prescription.od.dnp || ''}
+                    onChange={(e) => handleInputChange('od', 'dnp', e.target.value)}
+                    className="w-full text-center px-2 py-1.5 border border-slate-200 rounded-lg text-xs font-mono tabular-nums text-slate-800 focus:ring-2 focus:ring-gold-500 focus:border-gold-500 outline-none"
+                  />
+                </div>
+                <div className="w-20 max-w-[92px]">
+                  <label className="block text-[10px] font-mono text-slate-500 mb-1 leading-tight">
+                    Adição (ADD)
+                  </label>
+                  <input
+                    type="text"
+                    maxLength={6}
+                    inputMode="decimal"
+                    placeholder="+1.50"
+                    value={prescription.od.addition || ''}
+                    onChange={(e) => handleInputChange('od', 'addition', e.target.value)}
+                    className="w-full text-center px-2 py-1.5 border border-slate-200 rounded-lg text-xs font-mono tabular-nums text-slate-800 focus:ring-2 focus:ring-gold-500 focus:border-gold-500 outline-none"
+                  />
+                </div>
               </div>
             </div>
 
@@ -997,6 +1051,34 @@ export default function PrescriptionUpload({
                     value={prescription.oe.axis}
                     onChange={(e) => handleInputChange('oe', 'axis', e.target.value)}
                     className="w-full text-center px-2 py-1.5 border border-slate-200 rounded-lg text-xs font-mono tabular-nums font-bold text-slate-800 focus:ring-2 focus:ring-gold-500 focus:border-gold-500 outline-none"
+                  />
+                </div>
+                <div className="w-20 max-w-[92px]">
+                  <label className="block text-[10px] font-mono text-slate-500 mb-1 leading-tight">
+                    DNP (mm)
+                  </label>
+                  <input
+                    type="text"
+                    maxLength={4}
+                    inputMode="decimal"
+                    placeholder="31.5"
+                    value={prescription.oe.dnp || ''}
+                    onChange={(e) => handleInputChange('oe', 'dnp', e.target.value)}
+                    className="w-full text-center px-2 py-1.5 border border-slate-200 rounded-lg text-xs font-mono tabular-nums text-slate-800 focus:ring-2 focus:ring-gold-500 focus:border-gold-500 outline-none"
+                  />
+                </div>
+                <div className="w-20 max-w-[92px]">
+                  <label className="block text-[10px] font-mono text-slate-500 mb-1 leading-tight">
+                    Adição (ADD)
+                  </label>
+                  <input
+                    type="text"
+                    maxLength={6}
+                    inputMode="decimal"
+                    placeholder="+1.50"
+                    value={prescription.oe.addition || ''}
+                    onChange={(e) => handleInputChange('oe', 'addition', e.target.value)}
+                    className="w-full text-center px-2 py-1.5 border border-slate-200 rounded-lg text-xs font-mono tabular-nums text-slate-800 focus:ring-2 focus:ring-gold-500 focus:border-gold-500 outline-none"
                   />
                 </div>
               </div>
@@ -1164,6 +1246,13 @@ export default function PrescriptionUpload({
                     OD: {rx.od.spherical} / {rx.od.cylindrical} ({rx.od.axis}°) · OE:{' '}
                     {rx.oe.spherical} / {rx.oe.cylindrical} ({rx.oe.axis}°)
                   </p>
+                  {(rx.od.dnp || rx.oe.dnp || rx.od.addition || rx.oe.addition) && (
+                    <p className="font-mono tabular-nums text-[10px] text-slate-500 mt-0.5">
+                      {rx.od.dnp || rx.oe.dnp ? `DNP: ${rx.od.dnp || '-'} / ${rx.oe.dnp || '-'}mm` : ''}
+                      {(rx.od.dnp || rx.oe.dnp) && (rx.od.addition || rx.oe.addition) ? ' · ' : ''}
+                      {rx.od.addition || rx.oe.addition ? `ADD: ${rx.od.addition || rx.oe.addition}` : ''}
+                    </p>
+                  )}
                   {rx.fileAttached?.name && (
                     <p className="text-[10px] text-slate-500 mt-0.5 truncate">
                       Anexo: {rx.fileAttached.name}

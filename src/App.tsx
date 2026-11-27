@@ -95,6 +95,7 @@ export default function App() {
   );
   const [loadedAdminQuote, setLoadedAdminQuote] = useState<OpticalQuote | undefined>(undefined);
   const [newQuoteRequestId, setNewQuoteRequestId] = useState<number>(0);
+  const [catalogSelectionId, setCatalogSelectionId] = useState<number>(0);
 
   // Sync URL path when navigating across all sections (with strict ADM route protection)
   const navigateToSection = (section: string, notice?: string) => {
@@ -194,6 +195,7 @@ export default function App() {
     setSelectedColor(color);
     setSelectedLensType(lensType);
     setSelectedLensPrice(lensPrice);
+    setCatalogSelectionId((prev) => prev + 1);
     navigateToSection('quotes');
   };
 
@@ -278,6 +280,7 @@ export default function App() {
             onPrescriptionAdded={handlePrescriptionAdded}
             onPrescriptionSaved={(rx) => setLinkedPrescription(rx)}
             customerSession={customerSession}
+            isAdmin={isAdminAuthenticated}
             onRequestLogin={() => setIsLoginModalOpen(true)}
             onOpenLgpdPolicy={() => navigateToSection('lgpd')}
           />
@@ -294,6 +297,7 @@ export default function App() {
         {activeSection === 'quotes' && (
           <QuoteReceiptManager
             lastSelectedFrame={lastSelectedFrame}
+            catalogSelectionId={catalogSelectionId}
             selectedColor={selectedColor}
             selectedLensType={selectedLensType}
             selectedLensPrice={selectedLensPrice}
@@ -420,13 +424,11 @@ export default function App() {
             <button
               type="button"
               onClick={() => navigateToSection(isAdminAuthenticated ? 'admin' : 'admin-login')}
-              className="flex items-center gap-1.5 text-[11px] text-slate-400 hover:text-gold-400 cursor-pointer text-left"
+              className="flex items-center gap-1.5 text-[11px] text-slate-500 hover:text-gold-400 cursor-pointer text-left"
             >
-              <SlidersHorizontal className="h-3.5 w-3.5 text-slate-400" />
+              <SlidersHorizontal className="h-3.5 w-3.5 text-slate-500" />
               <span>
-                {isAdminAuthenticated
-                  ? 'Painel Administrativo (/admin)'
-                  : 'Acesso Administrativo (Login ADM)'}
+                {isAdminAuthenticated ? 'Painel Administrativo (/admin)' : 'Área Restrita'}
               </span>
             </button>
           </div>

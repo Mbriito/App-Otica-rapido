@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { MIN_FRAME_PRICE, premiumFrames } from '../data/frames';
 import { EyewearFrame } from '../types';
-import { Filter, SlidersHorizontal, Check, ShieldCheck, Sparkles, MessageSquare, ShoppingCart, ArrowRight, Eye, Sun, UserCheck, RefreshCw } from 'lucide-react';
+import { Filter, SlidersHorizontal, Check, ShieldCheck, Sparkles, MessageSquare, ShoppingCart, ArrowRight, Eye, Sun, Activity, UserCheck, RefreshCw } from 'lucide-react';
 import FaceShapeGuide from './FaceShapeGuide';
 import OpticalImage from './OpticalImage';
 import catalogEyewearHero from '../assets/images/catalog_eyewear_hero_1795637102870.jpg';
@@ -47,6 +47,17 @@ export default function Catalog({ onSelectFrameForQuote, onNavigateToPrescriptio
     };
   }, []);
 
+  useEffect(() => {
+    if (!selectedFrame) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setSelectedFrame(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedFrame]);
+
   const lensOptions = CATALOG_LENS_OPTIONS;
 
   // Filtering logic
@@ -76,7 +87,12 @@ export default function Catalog({ onSelectFrameForQuote, onNavigateToPrescriptio
   // Build WhatsApp pre-filled text
   const getWhatsAppMessageUrl = (frame: EyewearFrame, color: string, lens: string) => {
     const shapeFormatted = frame.shape === 'gatinho' ? 'De Gatinha' : frame.shape.charAt(0).toUpperCase() + frame.shape.slice(1);
-    const categoryFormatted = frame.category === 'sol' ? 'Óculos de Sol' : 'Óculos de Grau';
+    const categoryFormatted =
+      frame.category === 'sol'
+        ? 'Óculos de Sol'
+        : frame.category === 'esporte'
+          ? 'Óculos Esportivo'
+          : 'Óculos de Grau';
     const framePrice = Math.max(MIN_FRAME_PRICE, Number(frame.price) || MIN_FRAME_PRICE);
     
     const text = `Olá, *Ótica Rapido*! Gostei deste modelo no catálogo:\n\n` +
@@ -112,7 +128,8 @@ export default function Catalog({ onSelectFrameForQuote, onNavigateToPrescriptio
             Utilize os modelos abaixo como <strong>referência de formato e estilo</strong> para escolher a estética que mais combina com seu rosto. Você pode selecionar modelos para óculos de grau ou solares e solicitar prova a domicílio ou consultoria online.
           </p>
           <div className="mt-8 flex flex-wrap gap-4 items-center">
-            <button 
+            <button
+              type="button"
               onClick={onNavigateToPrescription}
               className="flex items-center gap-2 px-6 py-3 bg-gold-500 hover:bg-gold-400 text-slate-950 font-sans text-sm font-bold rounded-xl transition-all shadow-lg hover:shadow-gold-500/20 hover:-translate-y-0.5 cursor-pointer"
             >
@@ -159,22 +176,28 @@ export default function Catalog({ onSelectFrameForQuote, onNavigateToPrescriptio
               </label>
               <div className="flex flex-wrap gap-2">
                 {[
-                  { id: 'todos', label: 'Todos os Tipos' },
+                  { id: 'todos', label: 'Todos os Tipos', icon: null },
                   { id: 'grau', label: 'Óculos de Grau', icon: Eye },
-                  { id: 'sol', label: 'Óculos de Sol', icon: Sun }
-                ].map((item) => (
-                  <button
-                    key={item.id}
-                    onClick={() => setSelectedCategory(item.id)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-all flex items-center gap-1.5 cursor-pointer ${
-                      selectedCategory === item.id
-                        ? 'bg-sapphire-900 text-white border-sapphire-900 shadow-sm'
-                        : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'
-                    }`}
-                  >
-                    {item.label}
-                  </button>
-                ))}
+                  { id: 'sol', label: 'Óculos de Sol', icon: Sun },
+                  { id: 'esporte', label: 'Esportivo', icon: Activity },
+                ].map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => setSelectedCategory(item.id)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-all flex items-center gap-1.5 cursor-pointer ${
+                        selectedCategory === item.id
+                          ? 'bg-sapphire-900 text-white border-sapphire-900 shadow-sm'
+                          : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'
+                      }`}
+                    >
+                      {Icon && <Icon className="h-3.5 w-3.5" />}
+                      {item.label}
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
@@ -196,6 +219,7 @@ export default function Catalog({ onSelectFrameForQuote, onNavigateToPrescriptio
                 ].map((item) => (
                   <button
                     key={item.id}
+                    type="button"
                     onClick={() => setSelectedShape(item.id)}
                     className={`px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                       selectedShape === item.id
@@ -223,6 +247,7 @@ export default function Catalog({ onSelectFrameForQuote, onNavigateToPrescriptio
                 ].map((item) => (
                   <button
                     key={item.id}
+                    type="button"
                     onClick={() => setSelectedGender(item.id)}
                     className={`px-3 py-1.5 rounded-lg text-xs font-semibold border text-center transition-all cursor-pointer ${
                       selectedGender === item.id
@@ -250,6 +275,7 @@ export default function Catalog({ onSelectFrameForQuote, onNavigateToPrescriptio
                 ].map((item) => (
                   <button
                     key={item.id}
+                    type="button"
                     onClick={() => setSelectedMaterial(item.id)}
                     className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
                       selectedMaterial === item.id
@@ -265,6 +291,7 @@ export default function Catalog({ onSelectFrameForQuote, onNavigateToPrescriptio
 
             {/* Reset Filters */}
             <button
+              type="button"
               onClick={() => {
                 setSelectedCategory('todos');
                 setSelectedGender('todos');
@@ -307,18 +334,24 @@ export default function Catalog({ onSelectFrameForQuote, onNavigateToPrescriptio
                       {frame.referenceCode || 'REF'}
                     </span>
                     
-                    {/* Category Pill */}
+                    {/* Category Badge */}
                     <span className={`absolute top-3 right-3 text-[10px] font-black uppercase tracking-wider px-2.5 py-0.5 rounded-md z-10 ${
-                      frame.category === 'sol' 
-                        ? 'bg-amber-400 text-slate-950' 
-                        : 'bg-indigo-600 text-white'
+                      frame.category === 'sol'
+                        ? 'bg-amber-400 text-slate-950'
+                        : frame.category === 'esporte'
+                          ? 'bg-emerald-600 text-white'
+                          : 'bg-indigo-600 text-white'
                     }`}>
-                      {frame.category === 'sol' ? 'Solar UV400' : 'Armação de Grau'}
+                      {frame.category === 'sol'
+                        ? 'Solar UV400'
+                        : frame.category === 'esporte'
+                          ? 'Esportivo'
+                          : 'Armação de Grau'}
                     </span>
 
                     <OpticalImage
                       src={frame.imageUrl}
-                      alt={`${frame.name} — ${frame.category === 'sol' ? 'Óculos de Sol UV400' : 'Armação de Grau'} (${shapeName})`}
+                      alt={`${frame.name} — ${frame.category === 'sol' ? 'Óculos de Sol UV400' : frame.category === 'esporte' ? 'Óculos Esportivo' : 'Armação de Grau'} (${shapeName})`}
                       fallbackLabel={frame.referenceCode || 'Ótica Rapido'}
                       fallbackSublabel={frame.name}
                       className="w-full h-full object-cover object-center group-hover:scale-105 transition-transform duration-500"
@@ -377,7 +410,10 @@ export default function Catalog({ onSelectFrameForQuote, onNavigateToPrescriptio
                     </div>
 
                     <div className="mt-auto pt-2">
-                      <button className="w-full py-2.5 bg-slate-100 hover:bg-gold-500 hover:text-slate-950 text-slate-800 font-sans font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition-all cursor-pointer">
+                      <button
+                        type="button"
+                        className="w-full py-2.5 bg-slate-100 hover:bg-gold-500 hover:text-slate-950 text-slate-800 font-sans font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition-all cursor-pointer"
+                      >
                         Selecionar Este Modelo
                         <ArrowRight className="h-3.5 w-3.5" />
                       </button>
@@ -392,8 +428,13 @@ export default function Catalog({ onSelectFrameForQuote, onNavigateToPrescriptio
 
       {/* QUICK MODAL / DETAIL CAROUSEL */}
       {selectedFrame && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-white rounded-3xl max-w-4xl w-full shadow-2xl border border-slate-100 overflow-hidden flex flex-col md:flex-row animate-in fade-in zoom-in duration-250">
+        <div
+          className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setSelectedFrame(null);
+          }}
+        >
+          <div className="bg-white rounded-3xl max-w-4xl w-full shadow-2xl border border-slate-100 overflow-hidden flex flex-col md:flex-row">
             {/* Image display */}
             <div className="md:w-1/2 relative bg-slate-100 aspect-[4/3] md:aspect-auto md:min-h-[450px] overflow-hidden">
               <OpticalImage
@@ -429,6 +470,8 @@ export default function Catalog({ onSelectFrameForQuote, onNavigateToPrescriptio
                     Referência para Atendimento
                   </span>
                   <button
+                    type="button"
+                    aria-label="Fechar detalhes da armação"
                     onClick={() => setSelectedFrame(null)}
                     className="text-slate-400 hover:text-slate-900 font-sans text-xl font-bold p-1 cursor-pointer"
                   >
@@ -473,6 +516,7 @@ export default function Catalog({ onSelectFrameForQuote, onNavigateToPrescriptio
                     {selectedFrame.colors.map((color) => (
                       <button
                         key={color}
+                        type="button"
                         onClick={() => setChosenColor(color)}
                         className={`flex items-center gap-2 px-3 py-2 border rounded-xl text-xs transition-all cursor-pointer ${
                           chosenColor === color
@@ -504,6 +548,7 @@ export default function Catalog({ onSelectFrameForQuote, onNavigateToPrescriptio
                     {lensOptions.map((lens) => (
                       <button
                         key={lens.name}
+                        type="button"
                         onClick={() => setChosenLens({ name: lens.name, price: lens.price })}
                         className={`w-full text-left p-3 border rounded-xl flex items-start gap-3 transition-all cursor-pointer ${
                           chosenLens.name === lens.name
@@ -537,6 +582,7 @@ export default function Catalog({ onSelectFrameForQuote, onNavigateToPrescriptio
               <div className="border-t border-slate-100 pt-5 mt-4">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <button
+                    type="button"
                     onClick={handleSendToQuote}
                     className="w-full py-3 bg-slate-900 hover:bg-slate-800 text-gold-400 font-sans text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-2 shadow-md cursor-pointer"
                   >

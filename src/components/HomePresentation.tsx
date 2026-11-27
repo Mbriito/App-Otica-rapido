@@ -37,9 +37,10 @@ export default function HomePresentation({ onNavigate }: HomePresentationProps) 
           </p>
           
           <div className="mt-8 flex flex-wrap gap-4">
-            <button 
+            <button
+              type="button"
               onClick={() => onNavigate('catalog')}
-              className="flex items-center gap-2 px-6 py-3 bg-gold-500 hover:bg-gold-400 text-slate-950 font-sans text-xs font-bold rounded-xl transition-all shadow-lg hover:-translate-y-0.5"
+              className="flex items-center gap-2 px-6 py-3 bg-gold-500 hover:bg-gold-400 text-slate-950 font-sans text-xs font-bold rounded-xl transition-all shadow-lg hover:-translate-y-0.5 cursor-pointer"
             >
               Conhecer Catálogo
               <ChevronRight className="h-4 w-4" />
@@ -82,9 +83,10 @@ export default function HomePresentation({ onNavigate }: HomePresentationProps) 
               </li>
             </ul>
           </div>
-          <button 
+          <button
+            type="button"
             onClick={() => onNavigate('prescription')}
-            className="mt-8 text-xs font-bold text-gold-700 hover:text-gold-800 flex items-center gap-1.5 peer text-left w-fit cursor-pointer"
+            className="mt-8 text-xs font-bold text-gold-700 hover:text-gold-800 flex items-center gap-1.5 text-left w-fit cursor-pointer"
           >
             Acessar Leitor de Receita <ChevronRight className="h-3.5 w-3.5" />
           </button>
@@ -93,7 +95,7 @@ export default function HomePresentation({ onNavigate }: HomePresentationProps) 
         {/* Conceito Atendimento a Domicílio */}
         <div className="bg-white border border-slate-200/80 rounded-2xl p-8 flex flex-col justify-between text-left shadow-sm">
           <div>
-            <div className="w-12 h-12 rounded-xl bg-gold-500/10 flex items-center justify-center text-gold-650 mb-6 border border-gold-500/20">
+            <div className="w-12 h-12 rounded-xl bg-gold-500/10 flex items-center justify-center text-gold-600 mb-6 border border-gold-500/20">
               <Home className="h-6 w-6 text-gold-700" />
             </div>
             <h3 className="font-display font-black text-xl text-slate-950 mb-3">
@@ -137,7 +139,7 @@ export default function HomePresentation({ onNavigate }: HomePresentationProps) 
           <div className="p-5 rounded-xl bg-sapphire-950/60 border border-sapphire-800/80">
             <ShieldCheck className="h-8 w-8 text-gold-500 mb-3" />
             <h4 className="font-sans font-bold text-sm text-slate-100">Segurança de Grau</h4>
-            <p className="text-[11px] text-slate-400 mt-1 lines leading-relaxed">
+            <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
               Todas as lentes fabricadas passam por conferência informatizada no lensômetro digital antes da montagem final. Garantia de adaptação ou substituição gratuita.
             </p>
           </div>
@@ -183,12 +185,14 @@ export default function HomePresentation({ onNavigate }: HomePresentationProps) 
         </p>
         <div className="flex flex-col sm:flex-row gap-3 justify-center">
           <button
+            type="button"
             onClick={() => onNavigate('catalog')}
             className="px-5 py-2.5 bg-sapphire-900 hover:bg-sapphire-800 text-white font-sans text-xs font-bold rounded-xl transition-all shadow-sm cursor-pointer"
           >
             Navegar Catálogo
           </button>
           <button
+            type="button"
             onClick={() => onNavigate('prescription')}
             className="px-5 py-2.5 bg-white border border-slate-300 hover:border-sapphire-800 text-slate-800 font-sans text-xs font-bold rounded-xl transition-all cursor-pointer"
           >

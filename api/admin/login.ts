@@ -1,5 +1,6 @@
 import { handleAdminLogin } from '../../server/adminAuth.ts';
 import {
+  HttpBodyError,
   readJsonBody,
   sendJson,
   type VercelLikeRequest,
@@ -16,7 +17,11 @@ export default async function handler(req: VercelLikeRequest, res: VercelLikeRes
     const body = await readJsonBody(req);
     const result = handleAdminLogin(body);
     sendJson(res, result.status, result.payload);
-  } catch {
+  } catch (err: unknown) {
+    if (err instanceof HttpBodyError) {
+      sendJson(res, err.status, { error: err.message });
+      return;
+    }
     sendJson(res, 400, { error: 'Requisição JSON inválida.' });
   }
 }

@@ -39,7 +39,21 @@ const revokedTokenIds = new Set<string>();
 
 function getSigningSecret(): string {
   const envSecret = process.env.ADMIN_SESSION_SECRET?.trim();
-  return envSecret && envSecret.length >= 16 ? envSecret : fallbackSigningSecret;
+  if (envSecret && envSecret.length >= 16) {
+    return envSecret;
+  }
+
+  const envPasscode = getEnvPasscode();
+  if (envPasscode) {
+    // Deterministic secret derived from server-only env credentials so ADM tokens
+    // remain valid across independent Vercel serverless function instances.
+    return crypto
+      .createHash('sha256')
+      .update(`otica-rapido-admin-token-v1:${getEnvAdminEmail()}:${envPasscode}`, 'utf8')
+      .digest('hex');
+  }
+
+  return fallbackSigningSecret;
 }
 
 function getEnvPasscode(): string {

@@ -38,6 +38,7 @@ export default function PrivacyPolicyLGPD({ onNavigateHome, onNavigateToPrescrip
   const [phone, setPhone] = useState('');
   const [details, setDetails] = useState('');
   const [submitted, setSubmitted] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [protocol, setProtocol] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -47,23 +48,30 @@ export default function PrivacyPolicyLGPD({ onNavigateHome, onNavigateToPrescrip
   const handleSubmitRequest = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
-    if (!fullName || !email || !cpf) {
+    if (!fullName.trim() || !email.trim() || !cpf.trim()) {
       setFormError('Por favor, preencha os campos obrigatórios (Nome, CPF e E-mail).');
       return;
     }
 
-    const generatedProtocol = `LGPD-RAPIDO-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
-    await saveLgpdRequestRecord({
-      protocol: generatedProtocol,
-      requestType,
-      fullName,
-      cpf,
-      email,
-      phone,
-      details,
-    });
-    setProtocol(generatedProtocol);
-    setSubmitted(true);
+    setIsSubmitting(true);
+    try {
+      const generatedProtocol = `LGPD-RAPIDO-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
+      await saveLgpdRequestRecord({
+        protocol: generatedProtocol,
+        requestType,
+        fullName: fullName.trim(),
+        cpf: cpf.trim(),
+        email: email.trim(),
+        phone: phone.trim(),
+        details: details.trim(),
+      });
+      setProtocol(generatedProtocol);
+      setSubmitted(true);
+    } catch {
+      setFormError('Não foi possível registrar sua solicitação agora. Tente novamente.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handleResetForm = () => {
@@ -462,8 +470,11 @@ export default function PrivacyPolicyLGPD({ onNavigateHome, onNavigateToPrescrip
                 Nova Solicitação
               </button>
               <a
-                href={`https://wa.me/5511947069414?text=Olá!%20Registrei%20a%20solicitação%20LGPD%20com%20o%20protocolo%20${protocol}%20para%20${fullName}.`}
+                href={`https://wa.me/5511947069414?text=${encodeURIComponent(
+                  `Olá! Registrei a solicitação LGPD com o protocolo ${protocol} para ${fullName}.`
+                )}`}
                 target="_blank"
+                rel="noopener noreferrer"
                 referrerPolicy="no-referrer"
                 className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center gap-1.5"
               >
@@ -479,20 +490,22 @@ export default function PrivacyPolicyLGPD({ onNavigateHome, onNavigateToPrescrip
                 Tipo de Solicitação:
               </label>
               <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-                {[
-                  { id: 'acesso', label: '1. Acessar Meus Dados', icon: Eye },
-                  { id: 'correcao', label: '2. Corrigir Dados', icon: FileText },
-                  { id: 'exclusao', label: '3. Excluir Dados', icon: Trash2 },
-                  { id: 'portabilidade', label: '4. Exportar Receitas', icon: Download },
-                  { id: 'revogacao', label: '5. Revogar Consentimento', icon: Lock }
-                ].map((item) => {
+                {(
+                  [
+                    { id: 'acesso', label: '1. Acessar Meus Dados', icon: Eye },
+                    { id: 'correcao', label: '2. Corrigir Dados', icon: FileText },
+                    { id: 'exclusao', label: '3. Excluir Dados', icon: Trash2 },
+                    { id: 'portabilidade', label: '4. Exportar Receitas', icon: Download },
+                    { id: 'revogacao', label: '5. Revogar Consentimento', icon: Lock },
+                  ] as const
+                ).map((item) => {
                   const Icon = item.icon;
                   const isSelected = requestType === item.id;
                   return (
                     <button
                       key={item.id}
                       type="button"
-                      onClick={() => setRequestType(item.id as any)}
+                      onClick={() => setRequestType(item.id)}
                       className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
                         isSelected
                           ? 'bg-slate-900 border-slate-900 text-white shadow-xs'
@@ -590,10 +603,20 @@ export default function PrivacyPolicyLGPD({ onNavigateHome, onNavigateToPrescrip
               </span>
               <button
                 type="submit"
-                className="w-full sm:w-auto px-6 py-2.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl shadow-md transition-all cursor-pointer flex items-center justify-center gap-2"
+                disabled={isSubmitting}
+                className="w-full sm:w-auto px-6 py-2.5 bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white text-xs font-bold rounded-xl shadow-md transition-all cursor-pointer flex items-center justify-center gap-2"
               >
-                <Send className="h-3.5 w-3.5 text-gold-400" />
-                <span>Registrar Solicitação LGPD</span>
+                {isSubmitting ? (
+                  <>
+                    <RefreshCw className="h-3.5 w-3.5 animate-spin text-gold-400" />
+                    <span>Registrando...</span>
+                  </>
+                ) : (
+                  <>
+                    <Send className="h-3.5 w-3.5 text-gold-400" />
+                    <span>Registrar Solicitação LGPD</span>
+                  </>
+                )}
               </button>
             </div>
           </form>

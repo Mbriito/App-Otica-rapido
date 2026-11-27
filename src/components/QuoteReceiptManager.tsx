@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   OpticalQuote,
   OpticalReceipt,
@@ -18,11 +18,8 @@ import {
   Check,
   RefreshCw,
   MessageSquare,
-  QrCode,
-  Link,
   Wallet,
   Copy,
-  CreditCard,
   Sparkles,
   Save,
   Glasses,
@@ -65,6 +62,7 @@ import {
 
 interface QuoteReceiptManagerProps {
   lastSelectedFrame?: EyewearFrame;
+  catalogSelectionId?: number;
   selectedColor?: string;
   selectedLensType?: string;
   selectedLensPrice?: number;
@@ -85,11 +83,16 @@ const DEFAULT_FRAME: EyewearFrame = {
 function createBlankQuote(
   customerSession?: CustomerSession | null,
   prescription?: MedicalPrescription,
-  isAdmin = false
+  isAdmin = false,
+  baseFrame: EyewearFrame = DEFAULT_FRAME
 ): OpticalQuote {
+  const safeFrame: EyewearFrame = {
+    ...baseFrame,
+    price: Math.max(MIN_FRAME_PRICE, Number(baseFrame.price) || MIN_FRAME_PRICE),
+  };
   const defaultItem: SelectedItem = {
-    frame: { ...DEFAULT_FRAME },
-    selectedColor: DEFAULT_FRAME.colors[0],
+    frame: safeFrame,
+    selectedColor: safeFrame.colors[0] || 'Preto Clássico',
     lensType: 'Lente Monofocal Orgânica + Filtro Azul (Blue UV / BlueCut)',
     lensPrice: 290,
     prescription,
@@ -122,6 +125,7 @@ function createBlankQuote(
 
 export default function QuoteReceiptManager({
   lastSelectedFrame,
+  catalogSelectionId = 0,
   selectedColor = '',
   selectedLensType = '',
   selectedLensPrice = 0,
@@ -155,17 +159,8 @@ export default function QuoteReceiptManager({
   } | null>(null);
   const [summaryCopied, setSummaryCopied] = useState<boolean>(false);
 
-  // Payment gateway states
-  const [paymentType, setPaymentType] = useState<'pix' | 'link'>('pix');
-  const [acquirer, setAcquirer] = useState<'mercadopago' | 'pagseguro' | 'stone' | 'infinitepay'>(
-    'mercadopago'
-  );
-  const [installments, setInstallments] = useState<string>('10x sem juros');
-  const [paymentStatus, setPaymentStatus] = useState<'aguardando' | 'pago' | 'processando'>(
-    'aguardando'
-  );
-  const [copiedText, setCopiedText] = useState<string | null>(null);
-  const [linkCopied, setLinkCopied] = useState<boolean>(false);
+  const allFramesRef = useRef<EyewearFrame[]>(premiumFrames);
+  const lastAppliedCatalogIdRef = useRef<number>(0);
 
   // Quote state
   const [quote, setQuote] = useState<OpticalQuote>(() =>
@@ -195,13 +190,14 @@ export default function QuoteReceiptManager({
     [allFrames]
   );
 
-  // Subscribe to quotes, prescriptions, and live catalog prices
+  // Subscribe to quotes, prescriptions, and live catalog prices (scoped by role/session)
   useEffect(() => {
     let active = true;
+    const scope = { isAdmin, customerSession };
 
     Promise.all([
-      fetchQuotes(),
-      fetchPrescriptions(),
+      fetchQuotes(scope),
+      fetchPrescriptions(scope),
       fetchCatalogFrames(),
       isAdmin ? fetchRegisteredCustomers() : Promise.resolve([]),
     ]).then(([loadedQuotes, loadedRx, catalogData, loadedCustomers]) => {
@@ -209,19 +205,21 @@ export default function QuoteReceiptManager({
       setSavedQuotes(loadedQuotes);
       setSavedPrescriptions(loadedRx);
       setCustomFrames(catalogData.customFrames);
+      allFramesRef.current = catalogData.allFrames;
       setAllFrames(catalogData.allFrames);
       setRegisteredCustomers(loadedCustomers);
     });
 
     const unsubQuotes = subscribeToQuotes((updated) => {
       if (active) setSavedQuotes(updated);
-    });
+    }, scope);
     const unsubRx = subscribeToPrescriptions((updated) => {
       if (active) setSavedPrescriptions(updated);
-    });
+    }, scope);
     const unsubCatalog = subscribeToCatalogUpdates((catalogData) => {
       if (!active) return;
       setCustomFrames(catalogData.customFrames);
+      allFramesRef.current = catalogData.allFrames;
       setAllFrames(catalogData.allFrames);
     });
 
@@ -231,12 +229,19 @@ export default function QuoteReceiptManager({
       unsubRx();
       unsubCatalog();
     };
-  }, [isAdmin]);
+  }, [isAdmin, customerSession]);
 
   // Reset to a fresh quote when ADM triggers "+ Novo Orçamento" from /admin
   useEffect(() => {
     if (!newQuoteRequestId) return;
-    setQuote(createBlankQuote(customerSession, linkedPrescription, isAdmin));
+    setQuote(
+      createBlankQuote(
+        customerSession,
+        linkedPrescription,
+        isAdmin,
+        allFramesRef.current[0] || DEFAULT_FRAME
+      )
+    );
     setSelectedTreatmentId('filtro_azul');
     setSelectedSavedRxId('');
     setSelectedRegisteredCustomerId('');
@@ -266,9 +271,12 @@ export default function QuoteReceiptManager({
     setSaveFeedback(null);
   }, [initialQuote]);
 
-  // Load selected frame from Catalog (preserving linked prescription & exact catalog lens price including R$ 0)
+  // Load selected frame ONLY on a fresh selection from Catalog (never overwrites user edits when prescription updates)
   useEffect(() => {
-    if (!lastSelectedFrame) return;
+    if (!lastSelectedFrame || !catalogSelectionId) return;
+    if (catalogSelectionId === lastAppliedCatalogIdRef.current) return;
+    lastAppliedCatalogIdRef.current = catalogSelectionId;
+
     const resolvedLensType =
       selectedLensType || 'Lente Monofocal Orgânica + Filtro Azul (Blue UV / BlueCut)';
     const resolvedLensPrice = selectedLensType
@@ -300,7 +308,14 @@ export default function QuoteReceiptManager({
     });
     setSelectedTreatmentId(inferTreatmentIdFromLensType(resolvedLensType));
     setActiveTab('quote');
-  }, [lastSelectedFrame, selectedColor, selectedLensType, selectedLensPrice, linkedPrescription]);
+  }, [
+    catalogSelectionId,
+    lastSelectedFrame,
+    selectedColor,
+    selectedLensType,
+    selectedLensPrice,
+    linkedPrescription,
+  ]);
 
   // Attach prescription when coming from PrescriptionUpload tab
   useEffect(() => {
@@ -332,33 +347,32 @@ export default function QuoteReceiptManager({
     }));
   }, [customerSession, initialQuote]);
 
-  // Reset payment status when total changes
-  useEffect(() => {
-    setPaymentStatus('aguardando');
-  }, [activeTab, quote.total, receipt.amount]);
-
   const withFrame = isQuoteWithFrame(quote);
   const effectivePrescription = getEffectivePrescription(quote);
 
   const handleToggleIncludeFrame = (nextIncludeFrame: boolean) => {
+    const fallbackFrame = allFrames[0] || DEFAULT_FRAME;
     setQuote((prev) => {
       const nextItems = prev.items.map((item) => {
         if (!nextIncludeFrame) {
           return item;
         }
-        // Restoring frame mode: if frame was empty placeholder, restore a sensible default name/price
+        // Restoring frame mode: if frame was empty placeholder, restore a live catalog frame/price
         const needsDefaultName =
           !item.frame.name || item.frame.name === 'Armação Própria do Cliente';
         return {
           ...item,
           frame: {
             ...item.frame,
-            name: needsDefaultName ? DEFAULT_FRAME.name : item.frame.name,
+            name: needsDefaultName ? fallbackFrame.name : item.frame.name,
             brand:
               item.frame.brand === 'Cliente' || !item.frame.brand
-                ? DEFAULT_FRAME.brand
+                ? fallbackFrame.brand
                 : item.frame.brand,
-            price: item.frame.price > 0 ? item.frame.price : DEFAULT_FRAME.price,
+            price:
+              item.frame.price >= MIN_FRAME_PRICE
+                ? item.frame.price
+                : Math.max(MIN_FRAME_PRICE, fallbackFrame.price || MIN_FRAME_PRICE),
           },
         };
       });
@@ -375,7 +389,13 @@ export default function QuoteReceiptManager({
   };
 
   const updateQuoteField = (field: keyof OpticalQuote, value: string | number) => {
-    if (field === 'discount' && !isAdmin) {
+    const adminOnlyFields: Array<keyof OpticalQuote> = [
+      'discount',
+      'quoteNumber',
+      'validUntil',
+      'sellerName',
+    ];
+    if (!isAdmin && adminOnlyFields.includes(field)) {
       return;
     }
     setQuote((prev) => {
@@ -521,7 +541,14 @@ export default function QuoteReceiptManager({
   };
 
   const handleNewQuote = () => {
-    setQuote(createBlankQuote(customerSession, linkedPrescription, isAdmin));
+    setQuote(
+      createBlankQuote(
+        customerSession,
+        linkedPrescription,
+        isAdmin,
+        allFrames[0] || DEFAULT_FRAME
+      )
+    );
     setSelectedTreatmentId('filtro_azul');
     setSelectedSavedRxId('');
     setSelectedRegisteredCustomerId('');
@@ -682,98 +709,48 @@ export default function QuoteReceiptManager({
     });
   };
 
-  const getPixPayload = () => {
-    const totalAmount = activeTab === 'quote' ? quote.total : receipt.amount;
-    const documentId = activeTab === 'quote' ? quote.quoteNumber : receipt.receiptNumber;
-    return `00020101021226870014br.gov.bcb.pix2565pix.oticarapido.com.br/cob/doc${documentId.replace(
-      /[^a-zA-Z0-9]/g,
-      ''
-    )}5204000053039865407${totalAmount.toFixed(
-      2
-    )}5802BR5912Otica Rapido6009Sao Paulo62070503***6304`;
+  const handleConvertQuoteToReceipt = () => {
+    if (!isAdmin) {
+      onRequireAdminLogin?.(
+        'A emissão de Recibos Oficiais é restrita ao Administrador (ADM) autenticado.'
+      );
+      return;
+    }
+
+    const itemsDescription = quote.items
+      .map((item, i) =>
+        withFrame
+          ? `${i + 1}) ${item.frame.name} (${item.selectedColor}) + Lentes: ${item.lensType}`
+          : `${i + 1}) Somente Lentes: ${item.lensType} (Armação própria do cliente)`
+      )
+      .join(', ');
+
+    setReceipt({
+      id: `R-${Math.floor(1000 + Math.random() * 9000)}`,
+      receiptNumber: `${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}-RC`,
+      date: new Date().toISOString().split('T')[0],
+      customerName: quote.customerName || 'Cliente Ótica Rapido',
+      customerCpf: quote.customerCpf || '',
+      customerPhone: quote.customerPhone || '',
+      amount: quote.total,
+      amountWritten: formatBRL(quote.total),
+      descriptionOfServices: `Serviço óptico Ótica Rapido (${getQuoteModalityLabel(
+        withFrame
+      )}): ${itemsDescription}.`,
+      paymentMethod: quote.paymentMethod || 'Pix à vista',
+      sellerName: quote.sellerName || 'Administrador - Ótica Rapido',
+      cnpj: '48.912.450/0001-88',
+      companyName: 'Ótica Rapido Ltda.',
+    });
+    setActiveTab('receipt');
   };
 
-  const getPaymentLink = () => {
-    const totalAmount = activeTab === 'quote' ? quote.total : receipt.amount;
-    const documentId = activeTab === 'quote' ? quote.quoteNumber : receipt.receiptNumber;
-    return `https://pagar.oticarapido.com.br/checkout/doc_${documentId.replace(
-      /[^a-zA-Z0-9]/g,
-      ''
-    )}?gate=${acquirer}&installments=${encodeURIComponent(installments)}&amt=${totalAmount}`;
-  };
-
-  const copyToClipboard = (text: string, type: 'pix' | 'link') => {
-    navigator.clipboard
-      .writeText(text)
-      .then(() => {
-        if (type === 'pix') {
-          setCopiedText('Código Pix copiado!');
-          setTimeout(() => setCopiedText(null), 3000);
-        } else {
-          setLinkCopied(true);
-          setTimeout(() => setLinkCopied(false), 3000);
-        }
-      })
-      .catch(() => {
-        if (type === 'pix') {
-          setCopiedText('Código copiado!');
-          setTimeout(() => setCopiedText(null), 3000);
-        } else {
-          setLinkCopied(true);
-          setTimeout(() => setLinkCopied(false), 3000);
-        }
-      });
-  };
-
-  const handleSimulatePaymentSuccess = () => {
-    setPaymentStatus('processando');
-    setTimeout(() => {
-      setPaymentStatus('pago');
-
-      const totalAmount = activeTab === 'quote' ? quote.total : receipt.amount;
-      const customerName = activeTab === 'quote' ? quote.customerName : receipt.customerName;
-      const customerCpf = activeTab === 'quote' ? quote.customerCpf : receipt.customerCpf;
-      const customerPhone = activeTab === 'quote' ? quote.customerPhone : receipt.customerPhone;
-
-      if (activeTab === 'quote') {
-        const itemsDescription = quote.items
-          .map((item, i) =>
-            withFrame
-              ? `${i + 1}) ${item.frame.name} (${item.selectedColor}) + Lentes: ${item.lensType}`
-              : `${i + 1}) Somente Lentes: ${item.lensType} (Armação própria do cliente)`
-          )
-          .join(', ');
-
-        setReceipt({
-          id: `R-${Math.floor(1000 + Math.random() * 9000)}`,
-          receiptNumber: `${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}-RC`,
-          date: new Date().toISOString().split('T')[0],
-          customerName: customerName || 'Cliente Ótica Rapido',
-          customerCpf: customerCpf || '-',
-          customerPhone,
-          amount: totalAmount,
-          amountWritten: formatBRL(totalAmount),
-          descriptionOfServices: `Serviço óptico Ótica Rapido (${getQuoteModalityLabel(
-            withFrame
-          )}): ${itemsDescription}.`,
-          paymentMethod:
-            paymentType === 'pix'
-              ? 'Pix à vista (Pago instantaneamente)'
-              : `Link de Pagamento - ${installments.toUpperCase()} (${acquirer.toUpperCase()})`,
-          sellerName: quote.sellerName || 'Administrador - Ótica Rapido',
-          cnpj: '48.912.450/0001-88',
-          companyName: 'Ótica Rapido Ltda.',
-        });
-      } else {
-        setReceipt((prev) => ({
-          ...prev,
-          paymentMethod:
-            paymentType === 'pix'
-              ? 'Pix à vista (Pago instantaneamente)'
-              : `Link de Pagamento - ${installments.toUpperCase()} (${acquirer.toUpperCase()})`,
-        }));
-      }
-    }, 900);
+  const buildPaymentApprovalWhatsAppUrl = () => {
+    const summary = buildQuoteSummaryText(quote);
+    const text =
+      `Olá, Ótica Rapido! Gostaria de aprovar o orçamento abaixo e receber a chave Pix oficial ou link de pagamento:\n\n` +
+      summary;
+    return `https://wa.me/${STORE_WHATSAPP_NUMBER}?text=${encodeURIComponent(text)}`;
   };
 
   const shareReceiptWhatsApp = () => {
@@ -972,25 +949,37 @@ export default function QuoteReceiptManager({
 
                   <div className="grid grid-cols-2 gap-3">
                     <div>
-                      <label className="block text-[10px] uppercase font-mono tracking-wider text-slate-400 mb-1">
-                        Nº Orçamento
+                      <label className="text-[10px] uppercase font-mono tracking-wider text-slate-400 mb-1 flex items-center justify-between">
+                        <span>Nº Orçamento</span>
+                        {!isAdmin && <Lock className="h-2.5 w-2.5 text-slate-400" />}
                       </label>
                       <input
                         type="text"
+                        readOnly={!isAdmin}
                         value={quote.quoteNumber}
                         onChange={(e) => updateQuoteField('quoteNumber', e.target.value)}
-                        className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-mono focus:ring-2 focus:ring-gold-500 outline-none"
+                        className={`w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-mono outline-none ${
+                          isAdmin
+                            ? 'bg-white focus:ring-2 focus:ring-gold-500'
+                            : 'bg-slate-100 text-slate-600 cursor-not-allowed'
+                        }`}
                       />
                     </div>
                     <div>
-                      <label className="block text-[10px] uppercase font-mono tracking-wider text-slate-400 mb-1">
-                        Válido Até
+                      <label className="text-[10px] uppercase font-mono tracking-wider text-slate-400 mb-1 flex items-center justify-between">
+                        <span>Válido Até</span>
+                        {!isAdmin && <Lock className="h-2.5 w-2.5 text-slate-400" />}
                       </label>
                       <input
                         type="date"
+                        readOnly={!isAdmin}
                         value={quote.validUntil}
                         onChange={(e) => updateQuoteField('validUntil', e.target.value)}
-                        className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-gold-500 outline-none"
+                        className={`w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none ${
+                          isAdmin
+                            ? 'bg-white focus:ring-2 focus:ring-gold-500'
+                            : 'bg-slate-100 text-slate-600 cursor-not-allowed'
+                        }`}
                       />
                     </div>
                   </div>
@@ -1090,11 +1079,15 @@ export default function QuoteReceiptManager({
                         OD: Esf {effectivePrescription.od.spherical || '0.00'} · Cil{' '}
                         {effectivePrescription.od.cylindrical || '0.00'} · Eixo{' '}
                         {effectivePrescription.od.axis || '0'}°
+                        {effectivePrescription.od.dnp ? ` · DNP ${effectivePrescription.od.dnp}` : ''}
+                        {effectivePrescription.od.addition ? ` · ADD ${effectivePrescription.od.addition}` : ''}
                       </p>
                       <p className="font-mono tabular-nums text-[10px] text-slate-600">
                         OE: Esf {effectivePrescription.oe.spherical || '0.00'} · Cil{' '}
                         {effectivePrescription.oe.cylindrical || '0.00'} · Eixo{' '}
                         {effectivePrescription.oe.axis || '0'}°
+                        {effectivePrescription.oe.dnp ? ` · DNP ${effectivePrescription.oe.dnp}` : ''}
+                        {effectivePrescription.oe.addition ? ` · ADD ${effectivePrescription.oe.addition}` : ''}
                       </p>
                     </div>
                   ) : (
@@ -1404,14 +1397,20 @@ export default function QuoteReceiptManager({
                   </div>
 
                   <div>
-                    <label className="block text-[10px] uppercase font-mono tracking-wider text-slate-400 mb-1">
-                      Consultor Responsável
+                    <label className="text-[10px] uppercase font-mono tracking-wider text-slate-400 mb-1 flex items-center justify-between">
+                      <span>Consultor Responsável</span>
+                      {!isAdmin && <Lock className="h-2.5 w-2.5 text-slate-400" />}
                     </label>
                     <input
                       type="text"
+                      readOnly={!isAdmin}
                       value={quote.sellerName}
                       onChange={(e) => updateQuoteField('sellerName', e.target.value)}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-gold-500 outline-none"
+                      className={`w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none ${
+                        isAdmin
+                          ? 'bg-white focus:ring-2 focus:ring-gold-500'
+                          : 'bg-slate-100 text-slate-600 cursor-not-allowed'
+                      }`}
                     />
                   </div>
 
@@ -1595,13 +1594,13 @@ export default function QuoteReceiptManager({
             )}
           </div>
 
-          {/* MÓDULO DE COBRANÇA DIGITAL (PIX & LINK) */}
+          {/* FINALIZAÇÃO & PAGAMENTO OFICIAL */}
           <div className="bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 shadow-xs space-y-4">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div className="flex items-center gap-2">
                 <Wallet className="h-4 w-4 text-gold-600" />
                 <h4 className="font-display font-black text-xs text-slate-950 uppercase tracking-wider">
-                  Cobrança Digital
+                  Finalização &amp; Pagamento
                 </h4>
               </div>
               <span className="text-xs font-mono tabular-nums font-bold text-slate-900">
@@ -1609,208 +1608,44 @@ export default function QuoteReceiptManager({
               </span>
             </div>
 
-            <div className="grid grid-cols-2 gap-1.5 bg-slate-100 p-1 rounded-xl">
-              <button
-                type="button"
-                onClick={() => setPaymentType('pix')}
-                className={`py-2 text-[11px] font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-                  paymentType === 'pix'
-                    ? 'bg-white text-slate-900 shadow-xs'
-                    : 'text-slate-500 hover:text-slate-800'
-                }`}
-              >
-                <QrCode className="h-3.5 w-3.5" /> Pix
-              </button>
-              <button
-                type="button"
-                onClick={() => setPaymentType('link')}
-                className={`py-2 text-[11px] font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-                  paymentType === 'link'
-                    ? 'bg-white text-slate-900 shadow-xs'
-                    : 'text-slate-500 hover:text-slate-800'
-                }`}
-              >
-                <Link className="h-3.5 w-3.5" /> Link de Pagamento
-              </button>
-            </div>
-
-            {paymentType === 'pix' && (
-              <div className="space-y-3 pt-1">
-                <div className="bg-slate-50 border border-slate-100 p-4 rounded-xl flex flex-col items-center text-center">
-                  <div className="relative p-2.5 bg-white border border-slate-200 rounded-xl mb-2">
-                    <svg viewBox="0 0 100 100" className="w-28 h-28">
-                      <path d="M5,5 h15 v15 h-15 z M5,10 h15 M10,5 v15" stroke="#334155" strokeWidth="2" fill="none" />
-                      <path d="M5,80 h15 v15 h-15 z M5,85 h15 M10,80 v15" stroke="#334155" strokeWidth="2" fill="none" />
-                      <path d="M80,5 h15 v15 h-15 z M80,10 h15 M85,5 v15" stroke="#334155" strokeWidth="2" fill="none" />
-                      <rect x="25" y="5" width="4" height="4" fill="#334155" />
-                      <rect x="35" y="15" width="4" height="4" fill="#334155" />
-                      <rect x="55" y="5" width="8" height="8" fill="#334155" />
-                      <rect x="70" y="25" width="4" height="12" fill="#334155" />
-                      <rect x="5" y="30" width="12" height="4" fill="#334155" />
-                      <rect x="25" y="35" width="8" height="4" fill="#334155" />
-                      <rect x="35" y="45" width="30" height="4" fill="#1e3a5f" />
-                      <rect x="45" y="35" width="4" height="30" fill="#1e3a5f" />
-                      <rect x="55" y="65" width="12" height="12" fill="#334155" />
-                      <rect x="35" y="75" width="4" height="16" fill="#334155" />
-                      <rect x="75" y="55" width="16" height="4" fill="#334155" />
-                      <rect x="85" y="65" width="8" height="8" fill="#334155" />
-                      <circle cx="50" cy="50" r="10" fill="#0284c7" />
-                      <path d="M47,50 l3,-3 l3,3 l-3,3 z" fill="#ffffff" />
-                    </svg>
-                    {paymentStatus === 'pago' && (
-                      <div className="absolute inset-0 bg-emerald-500/95 flex flex-col items-center justify-center text-white rounded-xl">
-                        <Check className="h-8 w-8 mb-1" />
-                        <span className="font-sans font-black text-[9px] uppercase tracking-wider">
-                          PIX CONFIRMADO
-                        </span>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="w-full flex gap-1.5 mt-1">
-                    <input
-                      type="text"
-                      readOnly
-                      value={getPixPayload()}
-                      className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-slate-500 font-mono text-[10px] truncate outline-none"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => copyToClipboard(getPixPayload(), 'pix')}
-                      className="px-3 bg-slate-900 text-white rounded-lg text-xs hover:bg-slate-800 transition-colors flex items-center justify-center cursor-pointer"
-                      title="Copiar Código Pix"
-                    >
-                      <Copy className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                  {copiedText && (
-                    <span className="text-[11px] text-emerald-600 font-semibold mt-1.5 flex items-center gap-1">
-                      <Check className="h-3 w-3" /> {copiedText}
-                    </span>
-                  )}
-                </div>
-
-                <div className="flex items-center justify-between bg-slate-50 p-3 rounded-xl border border-slate-100 text-xs">
-                  <span className="font-medium text-slate-600">
-                    {paymentStatus === 'aguardando'
-                      ? 'Aguardando confirmação'
-                      : paymentStatus === 'processando'
-                        ? 'Validando...'
-                        : 'Pagamento confirmado · Recibo pronto'}
-                  </span>
-                  {paymentStatus === 'aguardando' && (
-                    <button
-                      type="button"
-                      onClick={handleSimulatePaymentSuccess}
-                      className="px-2.5 py-1 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 text-[10px] font-bold rounded-lg transition-all cursor-pointer"
-                    >
-                      Gerar Recibo Pago
-                    </button>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {paymentType === 'link' && (
-              <div className="space-y-3 pt-1">
-                <div className="grid grid-cols-2 gap-2.5">
-                  <div>
-                    <label className="block text-[10px] uppercase font-mono tracking-wider text-slate-400 mb-1">
-                      Provedor
-                    </label>
-                    <select
-                      value={acquirer}
-                      onChange={(e) =>
-                        setAcquirer(
-                          e.target.value as 'mercadopago' | 'pagseguro' | 'stone' | 'infinitepay'
-                        )
-                      }
-                      className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-semibold outline-none"
-                    >
-                      <option value="mercadopago">Mercado Pago</option>
-                      <option value="pagseguro">PagSeguro UOL</option>
-                      <option value="stone">Stone Link</option>
-                      <option value="infinitepay">InfinitePay</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-[10px] uppercase font-mono tracking-wider text-slate-400 mb-1">
-                      Parcelas
-                    </label>
-                    <select
-                      value={installments}
-                      onChange={(e) => setInstallments(e.target.value)}
-                      className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs outline-none"
-                    >
-                      <option value="à vista">À vista</option>
-                      <option value="3x sem juros">Até 3x sem juros</option>
-                      <option value="6x sem juros">Até 6x sem juros</option>
-                      <option value="10x sem juros">Até 10x sem juros</option>
-                      <option value="12x com acréscimo">Até 12x</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="flex gap-1.5">
-                  <input
-                    type="text"
-                    readOnly
-                    value={getPaymentLink()}
-                    className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-slate-500 font-mono text-[10px] truncate outline-none"
-                  />
+            {isAdmin ? (
+              activeTab === 'quote' ? (
+                <div className="space-y-3">
+                  <p className="text-xs text-slate-600 leading-relaxed">
+                    Após confirmar o pagamento do cliente (Pix oficial ou maquininha/link), converta este orçamento em um Recibo Oficial pronto para impressão e envio no WhatsApp.
+                  </p>
                   <button
                     type="button"
-                    onClick={() => copyToClipboard(getPaymentLink(), 'link')}
-                    className="px-3 bg-slate-900 text-white rounded-lg text-xs hover:bg-slate-800 transition-colors flex items-center justify-center cursor-pointer"
-                    title="Copiar Link"
+                    onClick={handleConvertQuoteToReceipt}
+                    className="w-full py-2.5 bg-slate-950 hover:bg-slate-900 text-gold-400 font-display font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition-colors cursor-pointer"
                   >
-                    <Copy className="h-3.5 w-3.5" />
+                    <Receipt className="h-4 w-4" />
+                    Converter Orçamento em Recibo Oficial
                   </button>
                 </div>
-
-                {linkCopied && (
-                  <span className="text-[11px] text-emerald-600 font-semibold block">
-                    Link de pagamento copiado!
-                  </span>
-                )}
-
-                <div className="flex gap-2">
-                  <a
-                    href={(() => {
-                      const amount = activeTab === 'quote' ? quote.total : receipt.amount;
-                      const clientName =
-                        activeTab === 'quote' ? quote.customerName : receipt.customerName;
-                      const phone =
-                        activeTab === 'quote' ? quote.customerPhone : receipt.customerPhone;
-                      const cleanPhone = (phone || '').replace(/\D/g, '');
-                      const target =
-                        cleanPhone.length >= 10
-                          ? cleanPhone.startsWith('55')
-                            ? cleanPhone
-                            : `55${cleanPhone}`
-                          : STORE_WHATSAPP_NUMBER;
-                      const text =
-                        `Olá, *${clientName || 'Cliente'}*!\n\n` +
-                        `Segue o link de pagamento do seu orçamento na *Ótica Rapido*:\n` +
-                        `*Total:* ${formatBRL(amount)} (${installments})\n` +
-                        `*Link:* ${getPaymentLink()}`;
-                      return `https://wa.me/${target}?text=${encodeURIComponent(text)}`;
-                    })()}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold rounded-lg flex items-center justify-center gap-1.5 transition-colors"
-                  >
-                    <CreditCard className="h-3.5 w-3.5" />
-                    Enviar Link
-                  </a>
-                  <button
-                    type="button"
-                    onClick={handleSimulatePaymentSuccess}
-                    className="flex-1 py-2 bg-slate-900 hover:bg-slate-800 text-gold-400 text-[11px] font-bold rounded-lg transition-colors cursor-pointer"
-                  >
-                    Confirmar e Recibo
-                  </button>
+              ) : (
+                <p className="text-xs text-slate-600 leading-relaxed">
+                  Recibo pronto para emissão. Use <strong>Baixar PDF</strong> na barra ao lado para salvar ou imprimir, ou clique em <strong>Enviar Recibo pelo WhatsApp</strong>.
+                </p>
+              )
+            ) : (
+              <div className="space-y-3">
+                <div className="bg-slate-50 border border-slate-100 rounded-xl p-3.5 text-xs text-slate-600 space-y-1.5">
+                  <p className="font-semibold text-slate-900">
+                    Condições Oficiais Ótica Rapido:
+                  </p>
+                  <p>• Pix à vista (chave oficial enviada após validação da receita)</p>
+                  <p>• Cartão de crédito em até 10x sem juros</p>
                 </div>
+                <a
+                  href={buildPaymentApprovalWhatsAppUrl()}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-sans font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition-colors shadow-sm"
+                >
+                  <MessageSquare className="h-4 w-4" />
+                  Aprovar e Solicitar Pix / Link Oficial
+                </a>
               </div>
             )}
           </div>
@@ -2026,11 +1861,15 @@ export default function QuoteReceiptManager({
                           <strong>OD (Direito):</strong> Esf {effectivePrescription.od.spherical || '0.00'} · Cil{' '}
                           {effectivePrescription.od.cylindrical || '0.00'} · Eixo{' '}
                           {effectivePrescription.od.axis || '0'}°
+                          {effectivePrescription.od.dnp ? ` · DNP ${effectivePrescription.od.dnp}` : ''}
+                          {effectivePrescription.od.addition ? ` · ADD ${effectivePrescription.od.addition}` : ''}
                         </div>
                         <div className="sm:border-l sm:border-slate-200 sm:pl-3">
                           <strong>OE (Esquerdo):</strong> Esf {effectivePrescription.oe.spherical || '0.00'} · Cil{' '}
                           {effectivePrescription.oe.cylindrical || '0.00'} · Eixo{' '}
                           {effectivePrescription.oe.axis || '0'}°
+                          {effectivePrescription.oe.dnp ? ` · DNP ${effectivePrescription.oe.dnp}` : ''}
+                          {effectivePrescription.oe.addition ? ` · ADD ${effectivePrescription.oe.addition}` : ''}
                         </div>
                       </div>
                     </div>

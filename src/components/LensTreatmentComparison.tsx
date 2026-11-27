@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Sparkles, Shield, Monitor, Sun, Check, Eye, HelpCircle, ArrowRight, Zap, Info, ShieldCheck } from 'lucide-react';
+import { Sparkles, Shield, Monitor, Sun, Check, Eye, HelpCircle, ArrowRight, Info } from 'lucide-react';
 
 export interface LensTreatment {
   id: 'antirreflexo' | 'filtro_azul' | 'fotocromaticas';
@@ -116,13 +116,11 @@ export const LENS_TREATMENTS: LensTreatment[] = [
 interface LensTreatmentComparisonProps {
   onSelectTreatment?: (treatment: LensTreatment) => void;
   selectedTreatmentId?: string;
-  isCompact?: boolean;
 }
 
 export default function LensTreatmentComparison({
   onSelectTreatment,
   selectedTreatmentId,
-  isCompact = false
 }: LensTreatmentComparisonProps) {
   const [activeTab, setActiveTab] = useState<'tabela' | 'detalhes'>('tabela');
 
@@ -439,7 +437,7 @@ export default function LensTreatmentComparison({
           <Info className="h-3.5 w-3.5 text-gold-600 flex-shrink-0" />
           <span>Dica do especialista: Todos os tratamentos possuem garantia e podem ser combinados com lentes monofocais ou multifocais.</span>
         </div>
-        <span className="font-mono text-slate-500 font-medium">Ótica Visão • Laboratório Oftálmico</span>
+        <span className="font-mono text-slate-500 font-medium">Ótica Rapido • Laboratório Oftálmico</span>
       </div>
     </div>
   );

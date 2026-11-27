@@ -76,18 +76,21 @@ export default function AdminCustomerQuotes({
   useEffect(() => {
     let active = true;
 
-    fetchQuotes().then((loadedQuotes) => {
+    fetchQuotes({ isAdmin: true }).then((loadedQuotes) => {
       if (!active) return;
       setQuotes(loadedQuotes);
       setIsLoading(false);
       onQuotesCountChange?.(loadedQuotes.length);
     });
 
-    const unsubQuotes = subscribeToQuotes((updated) => {
-      if (!active) return;
-      setQuotes(updated);
-      onQuotesCountChange?.(updated.length);
-    });
+    const unsubQuotes = subscribeToQuotes(
+      (updated) => {
+        if (!active) return;
+        setQuotes(updated);
+        onQuotesCountChange?.(updated.length);
+      },
+      { isAdmin: true }
+    );
 
     return () => {
       active = false;

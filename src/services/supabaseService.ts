@@ -167,10 +167,11 @@ export async function fetchFramePriceOverrides(): Promise<Record<string, number>
         remoteMap[row.frame_id] = normalizeFramePrice(Number(row.price));
       }
     }
-    const merged = { ...localOverrides, ...remoteMap };
-    writeJsonStorage(STORAGE_KEYS.FRAME_PRICE_OVERRIDES, merged);
-    return merged;
-  } catch {
+    // Remote Supabase overrides are authoritative so reset prices stay reset
+    writeJsonStorage(STORAGE_KEYS.FRAME_PRICE_OVERRIDES, remoteMap);
+    return remoteMap;
+  } catch (err) {
+    console.warn('[Supabase] Falha ao buscar preços personalizados:', err);
     return localOverrides;
   }
 }
@@ -343,9 +344,11 @@ export async function createCustomFrame(
 
       if (!error && data) {
         savedFrame = mapRowToFrame(data as SupabaseFrameRow);
+      } else if (error) {
+        console.warn('[Supabase] Erro ao salvar armação no banco remoto:', error.message);
       }
-    } catch {
-      // Mantém persistência local
+    } catch (err) {
+      console.warn('[Supabase] Falha de conexão ao salvar armação:', err);
     }
   }
 
@@ -376,12 +379,15 @@ export async function updateCatalogFramePrice(params: {
   if (params.isCustom) {
     if (supabase && isUuid(params.frameId)) {
       try {
-        await supabase
+        const { error } = await supabase
           .from('frames')
           .update({ price: safePrice })
           .eq('id', params.frameId);
-      } catch {
-        // Fallback local
+        if (error) {
+          console.warn('[Supabase] Erro ao atualizar preço da armação:', error.message);
+        }
+      } catch (err) {
+        console.warn('[Supabase] Falha ao atualizar preço da armação:', err);
       }
     }
     const existing = readJsonStorage<EyewearFrame[]>(STORAGE_KEYS.CUSTOM_FRAMES, []);
@@ -392,7 +398,7 @@ export async function updateCatalogFramePrice(params: {
   } else {
     if (supabase) {
       try {
-        await supabase.from('frame_price_overrides').upsert(
+        const { error } = await supabase.from('frame_price_overrides').upsert(
           {
             frame_id: params.frameId,
             price: safePrice,
@@ -401,8 +407,11 @@ export async function updateCatalogFramePrice(params: {
           },
           { onConflict: 'frame_id' }
         );
-      } catch {
-        // Fallback local
+        if (error) {
+          console.warn('[Supabase] Erro ao salvar override de preço:', error.message);
+        }
+      } catch (err) {
+        console.warn('[Supabase] Falha ao salvar override de preço:', err);
       }
     }
     const existingOverrides = readJsonStorage<Record<string, number>>(
@@ -427,9 +436,12 @@ export async function resetCatalogFramePrice(
 
   if (supabase) {
     try {
-      await supabase.from('frame_price_overrides').delete().eq('frame_id', frameId);
-    } catch {
-      // Fallback local
+      const { error } = await supabase.from('frame_price_overrides').delete().eq('frame_id', frameId);
+      if (error) {
+        console.warn('[Supabase] Erro ao restaurar preço padrão:', error.message);
+      }
+    } catch (err) {
+      console.warn('[Supabase] Falha ao restaurar preço padrão:', err);
     }
   }
 
@@ -454,9 +466,12 @@ export async function deleteCustomFrame(
 
   if (supabase) {
     try {
-      await supabase.from('frames').delete().eq('id', frameId);
-    } catch {
-      // Continua removendo do cache local
+      const { error } = await supabase.from('frames').delete().eq('id', frameId);
+      if (error) {
+        console.warn('[Supabase] Erro ao excluir armação:', error.message);
+      }
+    } catch (err) {
+      console.warn('[Supabase] Falha ao excluir armação:', err);
     }
   }
 
@@ -464,54 +479,6 @@ export async function deleteCustomFrame(
   const updated = existing.filter((f) => f.id !== frameId);
   writeJsonStorage(STORAGE_KEYS.CUSTOM_FRAMES, updated);
   window.dispatchEvent(new CustomEvent(FRAMES_UPDATED_EVENT));
-}
-
-export function subscribeToCustomFrames(onUpdate: (frames: EyewearFrame[]) => void): () => void {
-  const handleLocalOrRemoteChange = async () => {
-    const frames = await fetchCustomFrames();
-    onUpdate(frames);
-  };
-
-  window.addEventListener(FRAMES_UPDATED_EVENT, handleLocalOrRemoteChange);
-
-  const handleStorageEvent = (e: StorageEvent) => {
-    if (
-      e.key === STORAGE_KEYS.CUSTOM_FRAMES ||
-      e.key === STORAGE_KEYS.FRAME_PRICE_OVERRIDES
-    ) {
-      handleLocalOrRemoteChange();
-    }
-  };
-  window.addEventListener('storage', handleStorageEvent);
-
-  let channel: ReturnType<NonNullable<typeof supabase>['channel']> | null = null;
-  if (supabase) {
-    channel = supabase
-      .channel('public:frames-realtime')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'frames' },
-        () => {
-          handleLocalOrRemoteChange();
-        }
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'frame_price_overrides' },
-        () => {
-          handleLocalOrRemoteChange();
-        }
-      )
-      .subscribe();
-  }
-
-  return () => {
-    window.removeEventListener(FRAMES_UPDATED_EVENT, handleLocalOrRemoteChange);
-    window.removeEventListener('storage', handleStorageEvent);
-    if (supabase && channel) {
-      supabase.removeChannel(channel);
-    }
-  };
 }
 
 export function subscribeToCatalogUpdates(
@@ -906,59 +873,112 @@ export async function savePrescriptionRecord(params: {
   };
 }
 
-export async function fetchPrescriptions(): Promise<SavedPrescriptionRecord[]> {
-  const local = readJsonStorage<SavedPrescriptionRecord[]>(STORAGE_KEYS.PRESCRIPTIONS, []);
+interface SupabasePrescriptionRow {
+  id: string;
+  customer_id?: string | null;
+  customer_identifier?: string | null;
+  patient_name?: string | null;
+  doctor_name?: string | null;
+  doctor_crm?: string | null;
+  exam_date?: string | null;
+  od?: MedicalPrescription['od'] | null;
+  oe?: MedicalPrescription['oe'] | null;
+  observation?: string | null;
+  file_name?: string | null;
+  file_size?: string | null;
+  file_type?: string | null;
+  created_at?: string | null;
+}
 
-  if (!supabase) {
+export interface ScopedQueryOptions {
+  isAdmin?: boolean;
+  customerSession?: CustomerSession | null;
+}
+
+function mapRowToPrescription(row: SupabasePrescriptionRow): SavedPrescriptionRecord {
+  return {
+    id: row.id,
+    customerId: row.customer_id || undefined,
+    patientName: row.patient_name || '',
+    doctorName: row.doctor_name || '',
+    doctorCrm: row.doctor_crm || '',
+    date: row.exam_date || new Date().toISOString().split('T')[0],
+    od: row.od || { spherical: '0.00', cylindrical: '0.00', axis: '0', dnp: '', addition: '' },
+    oe: row.oe || { spherical: '0.00', cylindrical: '0.00', axis: '0', dnp: '', addition: '' },
+    observation: row.observation || '',
+    fileAttached: row.file_name
+      ? {
+          name: row.file_name,
+          size: row.file_size || '',
+          type: row.file_type || '',
+        }
+      : undefined,
+    createdAt: row.created_at || new Date().toISOString(),
+  };
+}
+
+export async function fetchPrescriptions(
+  options?: ScopedQueryOptions
+): Promise<SavedPrescriptionRecord[]> {
+  const local = readJsonStorage<SavedPrescriptionRecord[]>(STORAGE_KEYS.PRESCRIPTIONS, []);
+  const isAdmin = Boolean(options?.isAdmin);
+  const customer = options?.customerSession ?? null;
+
+  // LGPD: visitantes sem sessão de cliente e sem login ADM só visualizam receitas criadas neste navegador
+  if (!supabase || (!isAdmin && !customer)) {
     return local;
   }
 
   try {
-    const { data, error } = await supabase
+    let query = supabase
       .from('prescriptions')
       .select('*')
       .order('created_at', { ascending: false })
       .limit(30);
 
+    if (!isAdmin && customer) {
+      if (isUuid(customer.id)) {
+        query = query.eq('customer_id', customer.id);
+      } else if (customer.identifier) {
+        query = query.eq('customer_identifier', customer.identifier);
+      } else {
+        return local;
+      }
+    }
+
+    const { data, error } = await query;
+
     if (error || !data) {
+      if (error) {
+        console.warn('[Supabase] Erro ao consultar receitas:', error.message);
+      }
       return local;
     }
 
-    const mapped: SavedPrescriptionRecord[] = data.map((row: any) => ({
-      id: row.id,
-      customerId: row.customer_id || undefined,
-      patientName: row.patient_name || '',
-      doctorName: row.doctor_name || '',
-      doctorCrm: row.doctor_crm || '',
-      date: row.exam_date || new Date().toISOString().split('T')[0],
-      od: row.od || { spherical: '0.00', cylindrical: '0.00', axis: '0', dnp: '', addition: '' },
-      oe: row.oe || { spherical: '0.00', cylindrical: '0.00', axis: '0', dnp: '', addition: '' },
-      observation: row.observation || '',
-      fileAttached: row.file_name
-        ? {
-            name: row.file_name,
-            size: row.file_size || '',
-            type: row.file_type || '',
-          }
-        : undefined,
-      createdAt: row.created_at || new Date().toISOString(),
-    }));
+    const mapped = (data as SupabasePrescriptionRow[]).map(mapRowToPrescription);
 
-    // Preserve local entries that might not be in remote (e.g., saved before login or offline)
+    if (isAdmin) {
+      const remoteIds = new Set(mapped.map((r) => r.id));
+      return [...mapped, ...local.filter((l) => !remoteIds.has(l.id))].slice(0, 40);
+    }
+
+    // Mescla apenas registros remotos do próprio cliente com registros locais deste navegador
     const remoteIds = new Set(mapped.map((r) => r.id));
     const merged = [...mapped, ...local.filter((l) => !remoteIds.has(l.id))].slice(0, 40);
     writeJsonStorage(STORAGE_KEYS.PRESCRIPTIONS, merged);
     return merged;
-  } catch {
+  } catch (err) {
+    console.warn('[Supabase] Falha ao carregar receitas:', err);
     return local;
   }
 }
 
 export function subscribeToPrescriptions(
-  onUpdate: (records: SavedPrescriptionRecord[]) => void
+  onUpdate: (records: SavedPrescriptionRecord[]) => void,
+  options?: ScopedQueryOptions
 ): () => void {
   const handleChange = async () => {
-    const records = await fetchPrescriptions();
+    const records = await fetchPrescriptions(options);
     onUpdate(records);
   };
   window.addEventListener(PRESCRIPTIONS_UPDATED_EVENT, handleChange);
@@ -1055,6 +1075,27 @@ export async function createHomeVisitAppointment(params: {
   return appointment;
 }
 
+interface SupabaseAppointmentRow {
+  id: string;
+  protocol: string;
+  customer_id?: string | null;
+  customer_name: string;
+  customer_phone: string;
+  customer_email?: string | null;
+  zip_code?: string | null;
+  street_address: string;
+  complement?: string | null;
+  neighborhood: string;
+  city: string;
+  visit_date: string;
+  preferred_time: string;
+  service_type: string;
+  notes?: string | null;
+  lgpd_consent?: boolean | null;
+  status: HomeVisitAppointment['status'];
+  created_at: string;
+}
+
 export async function listRecentAppointments(customerPhoneOrEmail?: string): Promise<HomeVisitAppointment[]> {
   const local = readJsonStorage<HomeVisitAppointment[]>(STORAGE_KEYS.APPOINTMENTS, []);
   if (!supabase || !customerPhoneOrEmail) {
@@ -1063,16 +1104,25 @@ export async function listRecentAppointments(customerPhoneOrEmail?: string): Pro
 
   try {
     const clean = customerPhoneOrEmail.trim();
+    if (!clean) return local;
+
+    // Usa .eq() separado (evita quebra do parser PostgREST com parênteses em telefones como "(11) 99999-9999")
+    const filterColumn = clean.includes('@') ? 'customer_email' : 'customer_phone';
     const { data, error } = await supabase
       .from('home_visit_appointments')
       .select('*')
-      .or(`customer_phone.eq.${clean},customer_email.eq.${clean}`)
+      .eq(filterColumn, clean)
       .order('created_at', { ascending: false })
       .limit(5);
 
-    if (error || !data) return local;
+    if (error || !data) {
+      if (error) {
+        console.warn('[Supabase] Erro ao buscar agendamentos:', error.message);
+      }
+      return local;
+    }
 
-    return data.map((row: any) => ({
+    return (data as SupabaseAppointmentRow[]).map((row) => ({
       id: row.id,
       protocol: row.protocol,
       customerId: row.customer_id || undefined,
@@ -1092,7 +1142,8 @@ export async function listRecentAppointments(customerPhoneOrEmail?: string): Pro
       status: row.status,
       createdAt: row.created_at,
     }));
-  } catch {
+  } catch (err) {
+    console.warn('[Supabase] Falha ao consultar agendamentos:', err);
     return local;
   }
 }
@@ -1112,7 +1163,7 @@ export async function saveLgpdRequestRecord(params: {
 }): Promise<void> {
   if (supabase) {
     try {
-      await supabase.from('lgpd_requests').insert({
+      const { error } = await supabase.from('lgpd_requests').insert({
         protocol: params.protocol,
         request_type: params.requestType,
         full_name: params.fullName,
@@ -1122,12 +1173,15 @@ export async function saveLgpdRequestRecord(params: {
         details: params.details || '',
         status: 'recebido',
       });
-    } catch {
-      // Fallback local
+      if (error) {
+        console.warn('[Supabase] Erro ao registrar solicitação LGPD:', error.message);
+      }
+    } catch (err) {
+      console.warn('[Supabase] Falha ao registrar solicitação LGPD:', err);
     }
   }
 
-  const existing = readJsonStorage<any[]>(STORAGE_KEYS.LGPD_REQUESTS, []);
+  const existing = readJsonStorage<Array<Record<string, unknown>>>(STORAGE_KEYS.LGPD_REQUESTS, []);
   writeJsonStorage(STORAGE_KEYS.LGPD_REQUESTS, [
     { ...params, createdAt: new Date().toISOString() },
     ...existing,
@@ -1198,6 +1252,19 @@ function mapRowToQuote(row: SupabaseQuoteRow): OpticalQuote {
   };
 }
 
+interface SupabaseCustomerRow {
+  id: string;
+  identifier: string;
+  identifier_type: 'email' | 'phone';
+  full_name?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  lgpd_consent?: boolean | null;
+  lgpd_consent_at?: string | null;
+  last_login_at?: string | null;
+  created_at: string;
+}
+
 export async function fetchRegisteredCustomers(): Promise<CustomerSession[]> {
   const localCustomers = readJsonStorage<CustomerSession[]>(STORAGE_KEYS.CUSTOMERS_DB, []);
   const activeSession = getStoredCustomerSession();
@@ -1217,10 +1284,13 @@ export async function fetchRegisteredCustomers(): Promise<CustomerSession[]> {
       .limit(50);
 
     if (error || !data) {
+      if (error) {
+        console.warn('[Supabase] Erro ao listar clientes:', error.message);
+      }
       return mergedLocal;
     }
 
-    const mapped: CustomerSession[] = data.map((row: any) => ({
+    const mapped: CustomerSession[] = (data as SupabaseCustomerRow[]).map((row) => ({
       id: row.id,
       identifier: row.identifier,
       identifierType: row.identifier_type,
@@ -1234,36 +1304,59 @@ export async function fetchRegisteredCustomers(): Promise<CustomerSession[]> {
 
     writeJsonStorage(STORAGE_KEYS.CUSTOMERS_DB, mapped);
     return mapped;
-  } catch {
+  } catch (err) {
+    console.warn('[Supabase] Falha ao consultar clientes:', err);
     return mergedLocal;
   }
 }
 
-export async function fetchQuotes(): Promise<OpticalQuote[]> {
+export async function fetchQuotes(options?: ScopedQueryOptions): Promise<OpticalQuote[]> {
   const localQuotes = readJsonStorage<OpticalQuote[]>(STORAGE_KEYS.QUOTES, []);
+  const isAdmin = Boolean(options?.isAdmin);
+  const customer = options?.customerSession ?? null;
 
-  if (!supabase) {
+  // Privacidade: visitantes sem login ADM e sem identificação de cliente veem apenas orçamentos criados neste navegador
+  if (!supabase || (!isAdmin && !customer)) {
     return localQuotes;
   }
 
   try {
-    const { data, error } = await supabase
+    let query = supabase
       .from('quotes')
       .select('*')
       .order('created_at', { ascending: false });
 
+    if (!isAdmin && customer) {
+      if (isUuid(customer.id)) {
+        query = query.eq('customer_id', customer.id);
+      } else if (customer.email) {
+        query = query.eq('customer_email', customer.email);
+      } else if (customer.phone) {
+        query = query.eq('customer_phone', customer.phone);
+      } else {
+        return localQuotes;
+      }
+    }
+
+    const { data, error } = await query;
+
     if (error || !data) {
+      if (error) {
+        console.warn('[Supabase] Erro ao consultar orçamentos:', error.message);
+      }
       return localQuotes;
     }
 
     const remoteMapped = (data as SupabaseQuoteRow[]).map(mapRowToQuote);
-    // Merge with any locally drafted quotes not yet synced to remote
     const remoteKeys = new Set(remoteMapped.map((q) => q.quoteNumber));
     const localOnly = localQuotes.filter((q) => !remoteKeys.has(q.quoteNumber));
     const merged = [...remoteMapped, ...localOnly];
-    writeJsonStorage(STORAGE_KEYS.QUOTES, merged);
+    if (!isAdmin) {
+      writeJsonStorage(STORAGE_KEYS.QUOTES, merged);
+    }
     return merged;
-  } catch {
+  } catch (err) {
+    console.warn('[Supabase] Falha ao consultar orçamentos:', err);
     return localQuotes;
   }
 }
@@ -1351,10 +1444,15 @@ export async function saveQuoteRecord(
       created_by: localQuote.createdBy || 'admin',
     };
 
+    const linkedPrescriptionId = (
+      localQuote.prescription as Partial<SavedPrescriptionRecord> | undefined
+    )?.id;
+
     const fullDbRow = {
       ...baseDbRow,
       include_frame: localQuote.includeFrame,
       prescription: localQuote.prescription || null,
+      prescription_id: isUuid(linkedPrescriptionId) ? linkedPrescriptionId : null,
     };
 
     const writeRemote = async (rowPayload: Record<string, unknown>) => {
@@ -1387,9 +1485,11 @@ export async function saveQuoteRecord(
           includeFrame: localQuote.includeFrame,
           prescription: localQuote.prescription || mapped.prescription,
         };
+      } else if (response.error) {
+        console.warn('[Supabase] Erro ao sincronizar orçamento:', response.error.message);
       }
-    } catch {
-      // Mantém persistência local segura
+    } catch (err) {
+      console.warn('[Supabase] Falha de conexão ao salvar orçamento:', err);
     }
   }
 
@@ -1414,9 +1514,12 @@ export async function updateQuoteStatus(
 
   if (supabase && isUuid(quoteId)) {
     try {
-      await supabase.from('quotes').update({ status }).eq('id', quoteId);
-    } catch {
-      // Fallback local
+      const { error } = await supabase.from('quotes').update({ status }).eq('id', quoteId);
+      if (error) {
+        console.warn('[Supabase] Erro ao atualizar status do orçamento:', error.message);
+      }
+    } catch (err) {
+      console.warn('[Supabase] Falha ao atualizar status do orçamento:', err);
     }
   }
 
@@ -1434,9 +1537,12 @@ export async function deleteQuoteRecord(
 
   if (supabase && isUuid(quoteId)) {
     try {
-      await supabase.from('quotes').delete().eq('id', quoteId);
-    } catch {
-      // Fallback local
+      const { error } = await supabase.from('quotes').delete().eq('id', quoteId);
+      if (error) {
+        console.warn('[Supabase] Erro ao excluir orçamento:', error.message);
+      }
+    } catch (err) {
+      console.warn('[Supabase] Falha ao excluir orçamento:', err);
     }
   }
 
@@ -1446,9 +1552,12 @@ export async function deleteQuoteRecord(
   window.dispatchEvent(new CustomEvent(QUOTES_UPDATED_EVENT));
 }
 
-export function subscribeToQuotes(onUpdate: (quotes: OpticalQuote[]) => void): () => void {
+export function subscribeToQuotes(
+  onUpdate: (quotes: OpticalQuote[]) => void,
+  options?: ScopedQueryOptions
+): () => void {
   const handleChange = async () => {
-    const quotes = await fetchQuotes();
+    const quotes = await fetchQuotes(options);
     onUpdate(quotes);
   };
 
@@ -1462,9 +1571,9 @@ export function subscribeToQuotes(onUpdate: (quotes: OpticalQuote[]) => void): (
   window.addEventListener('storage', handleStorageEvent);
 
   let channel: ReturnType<NonNullable<typeof supabase>['channel']> | null = null;
-  if (supabase) {
+  if (supabase && (options?.isAdmin || options?.customerSession)) {
     channel = supabase
-      .channel('public:quotes-realtime')
+      .channel(`public:quotes-realtime-${Math.random().toString(36).slice(2, 7)}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'quotes' },

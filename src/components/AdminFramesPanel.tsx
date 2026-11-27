@@ -81,8 +81,9 @@ export default function AdminFramesPanel({
   const [priceOverrides, setPriceOverrides] = useState<Record<string, number>>({});
   const [priceDrafts, setPriceDrafts] = useState<Record<string, string>>({});
   const [savingPriceId, setSavingPriceId] = useState<string | null>(null);
+  const savingPriceIdRef = useRef<string | null>(null);
   const [priceSearch, setPriceSearch] = useState('');
-  const [priceCategoryFilter, setPriceCategoryFilter] = useState<'todos' | 'grau' | 'sol'>('todos');
+  const [priceCategoryFilter, setPriceCategoryFilter] = useState<'todos' | 'grau' | 'sol' | 'esporte'>('todos');
 
   // New custom frame form state
   const [name, setName] = useState('');
@@ -120,6 +121,18 @@ export default function AdminFramesPanel({
   };
 
   useEffect(() => {
+    savingPriceIdRef.current = savingPriceId;
+  }, [savingPriceId]);
+
+  useEffect(() => {
+    return () => {
+      if (imagePreview) {
+        URL.revokeObjectURL(imagePreview);
+      }
+    };
+  }, [imagePreview]);
+
+  useEffect(() => {
     let active = true;
     fetchCatalogFrames().then(({ customFrames: cf, priceOverrides: ov, allFrames: all }) => {
       if (!active) return;
@@ -130,7 +143,7 @@ export default function AdminFramesPanel({
       setIsLoadingList(false);
     });
 
-    fetchQuotes().then((quotes) => {
+    fetchQuotes({ isAdmin: true }).then((quotes) => {
       if (active) {
         setQuotesCount(quotes.length);
       }
@@ -146,7 +159,7 @@ export default function AdminFramesPanel({
           const next: Record<string, string> = {};
           for (const frame of all) {
             next[frame.id] =
-              savingPriceId === frame.id && prev[frame.id] !== undefined
+              savingPriceIdRef.current === frame.id && prev[frame.id] !== undefined
                 ? prev[frame.id]
                 : frame.price.toFixed(2);
           }
@@ -159,7 +172,7 @@ export default function AdminFramesPanel({
       active = false;
       unsubscribe();
     };
-  }, [savingPriceId]);
+  }, []);
 
   const filteredPriceFrames = useMemo(() => {
     const query = priceSearch.trim().toLowerCase();
@@ -198,6 +211,9 @@ export default function AdminFramesPanel({
       return;
     }
 
+    if (imagePreview) {
+      URL.revokeObjectURL(imagePreview);
+    }
     setImageFile(file);
     setFeedback(null);
     const objectUrl = URL.createObjectURL(file);
@@ -521,13 +537,16 @@ export default function AdminFramesPanel({
               <select
                 value={priceCategoryFilter}
                 onChange={(e) =>
-                  setPriceCategoryFilter(e.target.value as 'todos' | 'grau' | 'sol')
+                  setPriceCategoryFilter(
+                    e.target.value as 'todos' | 'grau' | 'sol' | 'esporte'
+                  )
                 }
                 className="px-3 py-2 border border-slate-200 rounded-xl text-xs bg-slate-50 font-semibold text-slate-700 outline-none"
               >
                 <option value="todos">Todas as Categorias</option>
                 <option value="grau">Somente Grau</option>
                 <option value="sol">Somente Solar UV400</option>
+                <option value="esporte">Somente Esportivo</option>
               </select>
             </div>
           </div>
@@ -569,10 +588,16 @@ export default function AdminFramesPanel({
                             className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded ${
                               frame.category === 'sol'
                                 ? 'bg-amber-100 text-amber-900'
-                                : 'bg-indigo-100 text-indigo-800'
+                                : frame.category === 'esporte'
+                                  ? 'bg-emerald-100 text-emerald-900'
+                                  : 'bg-indigo-100 text-indigo-800'
                             }`}
                           >
-                            {frame.category === 'sol' ? 'Solar UV400' : 'Grau'}
+                            {frame.category === 'sol'
+                              ? 'Solar UV400'
+                              : frame.category === 'esporte'
+                                ? 'Esportivo'
+                                : 'Grau'}
                           </span>
                           {frame.isCustom && (
                             <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-emerald-100 text-emerald-800">

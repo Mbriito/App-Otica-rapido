@@ -109,7 +109,13 @@ export default function HomeVisitScheduler({
   }, [customerSession]);
 
   useEffect(() => {
-    listRecentAppointments(customerSession?.phone || customerSession?.email).then(setRecentAppointments);
+    let active = true;
+    listRecentAppointments(customerSession?.phone || customerSession?.email).then((items) => {
+      if (active) setRecentAppointments(items);
+    });
+    return () => {
+      active = false;
+    };
   }, [customerSession, confirmedAppointment]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -145,8 +151,10 @@ export default function HomeVisitScheduler({
         lgpdConsent,
       });
       setConfirmedAppointment(saved);
-    } catch (err: any) {
-      setError(err?.message || 'Erro ao registrar agendamento. Tente novamente.');
+    } catch (err: unknown) {
+      setError(
+        err instanceof Error ? err.message : 'Erro ao registrar agendamento. Tente novamente.'
+      );
     } finally {
       setIsSubmitting(false);
     }
